@@ -168,7 +168,7 @@ async fn run_activity(config: BotConfig, outgoing: mpsc::Sender<(i32, Vec<u8>)>)
         if config.swing {
             let mut body = Vec::new();
             protocol::write_varint(&mut body, 0);
-            if outgoing.send((spec.play_serverbound_swing, body)).await.is_err() {
+            if outgoing.send((spec.play_serverbound_swing_arm, body)).await.is_err() {
                 return;
             }
         }

@@ -37,6 +37,10 @@ pub fn write_f64(buffer: &mut Vec<u8>, value: f64) {
     buffer.extend_from_slice(&value.to_be_bytes());
 }
 
+pub fn write_f32(buffer: &mut Vec<u8>, value: f32) {
+    buffer.extend_from_slice(&value.to_be_bytes());
+}
+
 pub fn write_bool(buffer: &mut Vec<u8>, value: bool) {
     buffer.push(if value { 1 } else { 0 });
 }

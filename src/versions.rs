@@ -32,11 +32,12 @@ pub struct ProtocolSpec {
     pub play_serverbound_confirm_teleport: i32,
     pub play_serverbound_keep_alive: i32,
     pub play_serverbound_set_position: i32,
-    pub teleport_id_leads_position: bool,
-    pub client_information_has_particle_status: bool,
     pub play_serverbound_chat_message: i32,
     pub play_serverbound_chat_command: i32,
-    pub play_serverbound_swing: i32,
+    pub play_serverbound_swing_arm: i32,
+    pub play_serverbound_player_action: i32,
+    pub teleport_id_leads_position: bool,
+    pub client_information_has_particle_status: bool,
 }
 
 struct ConfigurationIds {
@@ -52,6 +53,13 @@ struct ConfigurationIds {
     serverbound_known_packs: i32,
 }
 
+struct ActivityIds {
+    chat_message: i32,
+    chat_command: i32,
+    swing_arm: i32,
+    player_action: i32,
+}
+
 const CONFIGURATION_MODERN: ConfigurationIds = ConfigurationIds {
     clientbound_disconnect: 0x02,
     clientbound_finish: 0x03,
@@ -65,6 +73,20 @@ const CONFIGURATION_MODERN: ConfigurationIds = ConfigurationIds {
     serverbound_known_packs: 0x07,
 };
 
+const ACTIVITY_LEGACY: ActivityIds = ActivityIds {
+    chat_message: 0x06,
+    chat_command: 0x05,
+    swing_arm: 0x36,
+    player_action: 0x24,
+};
+
+const ACTIVITY_MODERN: ActivityIds = ActivityIds {
+    chat_message: 0x07,
+    chat_command: 0x06,
+    swing_arm: 0x3A,
+    player_action: 0x28,
+};
+
 const fn describe(
     name: &'static str,
     protocol: i32,
@@ -75,6 +97,7 @@ const fn describe(
     play_serverbound_confirm_teleport: i32,
     play_serverbound_keep_alive: i32,
     play_serverbound_set_position: i32,
+    activity: ActivityIds,
     teleport_id_leads_position: bool,
     client_information_has_particle_status: bool,
 ) -> ProtocolSpec {
@@ -97,27 +120,28 @@ const fn describe(
         play_serverbound_confirm_teleport,
         play_serverbound_keep_alive,
         play_serverbound_set_position,
+        play_serverbound_chat_message: activity.chat_message,
+        play_serverbound_chat_command: activity.chat_command,
+        play_serverbound_swing_arm: activity.swing_arm,
+        play_serverbound_player_action: activity.player_action,
         teleport_id_leads_position,
         client_information_has_particle_status,
-        play_serverbound_chat_message: 0x06,
-        play_serverbound_chat_command: 0x04,
-        play_serverbound_swing: 0x36,
     }
 }
 
 pub static SPECS: &[ProtocolSpec] = &[
-    describe("1.20.2", 764, CONFIGURATION_MODERN, 0x1B, 0x24, 0x3E, 0x00, 0x14, 0x17, false, false),
-    describe("1.20.4", 765, CONFIGURATION_MODERN, 0x1B, 0x24, 0x3E, 0x00, 0x14, 0x17, false, false),
-    describe("1.20.6", 766, CONFIGURATION_MODERN, 0x1D, 0x26, 0x40, 0x00, 0x18, 0x1A, false, false),
-    describe("1.21.1", 767, CONFIGURATION_MODERN, 0x1D, 0x27, 0x42, 0x00, 0x18, 0x1A, false, false),
-    describe("1.21.3", 768, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, true, true),
-    describe("1.21.4", 769, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, true, true),
-    describe("1.21.5", 770, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, true, true),
-    describe("1.21.6", 771, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, true, true),
-    describe("1.21.8", 772, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, true, true),
-    describe("26.1", 773, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, true, true),
-    describe("26.2", 774, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, true, true),
-    describe("26.3", 775, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, true, true),
+    describe("1.20.2", 764, CONFIGURATION_MODERN, 0x1B, 0x24, 0x3E, 0x00, 0x14, 0x17, ACTIVITY_LEGACY, false, false),
+    describe("1.20.4", 765, CONFIGURATION_MODERN, 0x1B, 0x24, 0x3E, 0x00, 0x14, 0x17, ACTIVITY_LEGACY, false, false),
+    describe("1.20.6", 766, CONFIGURATION_MODERN, 0x1D, 0x26, 0x40, 0x00, 0x18, 0x1A, ACTIVITY_LEGACY, false, false),
+    describe("1.21.1", 767, CONFIGURATION_MODERN, 0x1D, 0x27, 0x42, 0x00, 0x18, 0x1A, ACTIVITY_LEGACY, false, false),
+    describe("1.21.3", 768, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
+    describe("1.21.4", 769, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
+    describe("1.21.5", 770, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
+    describe("1.21.6", 771, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
+    describe("1.21.8", 772, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
+    describe("26.1", 773, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
+    describe("26.2", 774, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
+    describe("26.3", 775, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
 ];
 
 pub fn spec_for(protocol: i32) -> Option<&'static ProtocolSpec> {
