@@ -25,7 +25,7 @@ There are no headless game clients and no Node runtime. Each bot is a small asyn
 ## Features
 
 - **Raw protocol clients**: handshake, login, configuration and play states implemented by hand on tokio, with compression, keep-alives and teleport confirms handled per bot.
-- **Multi-protocol**: the server version is detected through Server List Ping, or you can pin a protocol manually. Packet IDs are mapped per version from 1.20.2 to 26.3.
+- **Multi-protocol**: the server version is detected through Server List Ping, or you can pin a protocol manually. Packet IDs are mapped per version from 1.20.2 to 26.1.
 - **Realistic load**: per-bot view distance, spawn dispersion, and walking or sprinting at vanilla speeds, so each bot costs the server about as much as a real player.
 - **Seven bot models**: from a parked connection to a sprinting explorer that streams fresh chunks.
 - **Player activity**: optional chat messages, commands and arm swings on a timer, to exercise chat plugins, command handlers and packet listeners.
@@ -116,9 +116,9 @@ Listed from lightest to heaviest server cost:
 | 1.20.2 | 764 | | 1.21.5 | 770 |
 | 1.20.4 | 765 | | 1.21.6 | 771 |
 | 1.20.6 | 766 | | 1.21.8 | 772 |
-| 1.21.1 | 767 | | 26.1 | 773 |
-| 1.21.3 | 768 | | 26.2 | 774 |
-| 1.21.4 | 769 | | 26.3 | 775 |
+| 1.21.1 | 767 | | 1.21.9 | 773 |
+| 1.21.3 | 768 | | 1.21.11 | 774 |
+| 1.21.4 | 769 | | 26.1 | 775 |
 
 If the detected version is not recognised, MC-Stress falls back to 1.21.1. You can force a protocol or add a mapping in `src/versions.rs`.
 

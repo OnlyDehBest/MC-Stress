@@ -73,18 +73,17 @@ const CONFIGURATION_MODERN: ConfigurationIds = ConfigurationIds {
     serverbound_known_packs: 0x07,
 };
 
-const ACTIVITY_LEGACY: ActivityIds = ActivityIds {
-    chat_message: 0x06,
-    chat_command: 0x05,
-    swing_arm: 0x36,
-    player_action: 0x24,
-};
-
-const ACTIVITY_MODERN: ActivityIds = ActivityIds {
-    chat_message: 0x07,
-    chat_command: 0x06,
-    swing_arm: 0x3A,
-    player_action: 0x28,
+const CONFIGURATION_LEGACY: ConfigurationIds = ConfigurationIds {
+    clientbound_disconnect: 0x01,
+    clientbound_finish: 0x02,
+    clientbound_keep_alive: 0x03,
+    clientbound_ping: 0x04,
+    clientbound_known_packs: 0xFF,
+    serverbound_client_information: 0x00,
+    serverbound_finish: 0x02,
+    serverbound_keep_alive: 0x03,
+    serverbound_pong: 0x04,
+    serverbound_known_packs: 0xFF,
 };
 
 const fn describe(
@@ -129,19 +128,25 @@ const fn describe(
     }
 }
 
+const fn activity(chat_message: i32, chat_command: i32, swing_arm: i32, player_action: i32) -> ActivityIds {
+    ActivityIds { chat_message, chat_command, swing_arm, player_action }
+}
+
+// Packet IDs below are generated from PrismarineJS/minecraft-data (canonical).
+// Each row carries that exact version's configuration + play packet IDs.
 pub static SPECS: &[ProtocolSpec] = &[
-    describe("1.20.2", 764, CONFIGURATION_MODERN, 0x1B, 0x24, 0x3E, 0x00, 0x14, 0x17, ACTIVITY_LEGACY, false, false),
-    describe("1.20.4", 765, CONFIGURATION_MODERN, 0x1B, 0x24, 0x3E, 0x00, 0x14, 0x17, ACTIVITY_LEGACY, false, false),
-    describe("1.20.6", 766, CONFIGURATION_MODERN, 0x1D, 0x26, 0x40, 0x00, 0x18, 0x1A, ACTIVITY_LEGACY, false, false),
-    describe("1.21.1", 767, CONFIGURATION_MODERN, 0x1D, 0x27, 0x42, 0x00, 0x18, 0x1A, ACTIVITY_LEGACY, false, false),
-    describe("1.21.3", 768, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
-    describe("1.21.4", 769, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
-    describe("1.21.5", 770, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
-    describe("1.21.6", 771, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
-    describe("1.21.8", 772, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
-    describe("26.1", 773, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
-    describe("26.2", 774, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
-    describe("26.3", 775, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1D, ACTIVITY_MODERN, true, true),
+    describe("1.20.2", 764, CONFIGURATION_LEGACY, 0x1B, 0x24, 0x3E, 0x00, 0x14, 0x16, activity(0x05, 0x04, 0x32, 0x20), false, false),
+    describe("1.20.4", 765, CONFIGURATION_LEGACY, 0x1B, 0x24, 0x3E, 0x00, 0x15, 0x17, activity(0x05, 0x04, 0x33, 0x21), false, false),
+    describe("1.20.6", 766, CONFIGURATION_MODERN, 0x1D, 0x26, 0x40, 0x00, 0x18, 0x1A, activity(0x06, 0x04, 0x36, 0x24), false, false),
+    describe("1.21.1", 767, CONFIGURATION_MODERN, 0x1D, 0x26, 0x40, 0x00, 0x18, 0x1A, activity(0x06, 0x04, 0x36, 0x24), false, false),
+    describe("1.21.3", 768, CONFIGURATION_MODERN, 0x1D, 0x27, 0x42, 0x00, 0x1A, 0x1C, activity(0x07, 0x05, 0x38, 0x26), true, true),
+    describe("1.21.4", 769, CONFIGURATION_MODERN, 0x1D, 0x27, 0x42, 0x00, 0x1A, 0x1C, activity(0x07, 0x05, 0x3A, 0x27), true, true),
+    describe("1.21.5", 770, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1A, 0x1C, activity(0x07, 0x05, 0x3B, 0x27), true, true),
+    describe("1.21.6", 771, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1B, 0x1D, activity(0x08, 0x06, 0x3C, 0x28), true, true),
+    describe("1.21.8", 772, CONFIGURATION_MODERN, 0x1C, 0x26, 0x41, 0x00, 0x1B, 0x1D, activity(0x08, 0x06, 0x3C, 0x28), true, true),
+    describe("1.21.9", 773, CONFIGURATION_MODERN, 0x20, 0x2B, 0x46, 0x00, 0x1B, 0x1D, activity(0x08, 0x06, 0x3C, 0x28), true, true),
+    describe("1.21.11", 774, CONFIGURATION_MODERN, 0x20, 0x2B, 0x46, 0x00, 0x1B, 0x1D, activity(0x08, 0x06, 0x3C, 0x28), true, true),
+    describe("26.1", 775, CONFIGURATION_MODERN, 0x20, 0x2C, 0x48, 0x00, 0x1C, 0x1E, activity(0x09, 0x07, 0x3F, 0x29), true, true),
 ];
 
 pub fn spec_for(protocol: i32) -> Option<&'static ProtocolSpec> {
