@@ -1,15 +1,12 @@
-//! Server List Ping: misura la latenza del server (e legge online/max player).
-//! Serve come segnale per il breaking point e per la dashboard.
-
 use std::time::Duration;
 
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
-use crate::ids;
-use crate::protocol::{self as proto, Reader};
+use crate::protocol::{self, PayloadReader};
+use crate::versions;
 
-pub struct Status {
+pub struct ServerStatus {
     pub latency_ms: u64,
     pub online: Option<i64>,
     pub max: Option<i64>,
@@ -17,53 +14,56 @@ pub struct Status {
     pub version_name: Option<String>,
 }
 
-pub async fn ping(host: &str, port: u16, protocol: i32) -> std::io::Result<Status> {
+pub async fn ping(host: &str, port: u16, handshake_protocol: i32) -> std::io::Result<ServerStatus> {
     let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect((host, port)))
         .await
-        .map_err(|_| err("slp timeout"))??;
+        .map_err(|_| failure("slp timeout"))??;
     stream.set_nodelay(true).ok();
-    let (mut rd, mut wr) = stream.into_split();
-    let threshold = -1; // lo status non usa compressione
+    let (mut reader, mut writer) = stream.into_split();
+    let compression_threshold = -1;
 
-    // Handshake (next state = 1: status)
-    let mut b = Vec::new();
-    proto::w_varint(&mut b, protocol);
-    proto::w_string(&mut b, host);
-    proto::w_u16(&mut b, port);
-    proto::w_varint(&mut b, 1);
-    proto::write_packet(&mut wr, threshold, ids::SB_HANDSHAKE, &b).await?;
+    let mut handshake = Vec::new();
+    protocol::write_varint(&mut handshake, handshake_protocol);
+    protocol::write_string(&mut handshake, host);
+    protocol::write_u16(&mut handshake, port);
+    protocol::write_varint(&mut handshake, 1);
+    protocol::write_packet(&mut writer, compression_threshold, versions::SB_HANDSHAKE, &handshake).await?;
 
-    // Status Request
-    proto::write_packet(&mut wr, threshold, ids::SB_STATUS_REQUEST, &[]).await?;
-    let (_id, data) = proto::read_packet(&mut rd, threshold).await?;
-    let mut r = Reader::new(&data);
-    let len = r.varint()? as usize;
-    let json = String::from_utf8_lossy(r.take(len)?).to_string();
-    let (online, max, protocol, version_name) = parse_status(&json);
+    protocol::write_packet(&mut writer, compression_threshold, versions::SB_STATUS_REQUEST, &[]).await?;
+    let (_packet_id, body) = protocol::read_packet(&mut reader, compression_threshold).await?;
+    let mut payload = PayloadReader::new(&body);
+    let length = payload.read_varint()? as usize;
+    let json = String::from_utf8_lossy(payload.read_bytes(length)?).to_string();
+    let parsed = parse_status(&json);
 
-    // Ping -> Pong per misurare la latenza
-    let now = Instant::now();
-    let mut b = Vec::new();
-    proto::w_i64(&mut b, 1234);
-    proto::write_packet(&mut wr, threshold, ids::SB_STATUS_PING, &b).await?;
-    let _ = proto::read_packet(&mut rd, threshold).await?;
-    let latency_ms = now.elapsed().as_millis() as u64;
+    let before = Instant::now();
+    let mut ping_body = Vec::new();
+    protocol::write_i64(&mut ping_body, 1234);
+    protocol::write_packet(&mut writer, compression_threshold, versions::SB_STATUS_PING, &ping_body).await?;
+    let _ = protocol::read_packet(&mut reader, compression_threshold).await?;
+    let latency_ms = before.elapsed().as_millis() as u64;
 
-    Ok(Status { latency_ms, online, max, protocol, version_name })
+    Ok(ServerStatus {
+        latency_ms,
+        online: parsed.0,
+        max: parsed.1,
+        protocol: parsed.2,
+        version_name: parsed.3,
+    })
 }
 
 fn parse_status(json: &str) -> (Option<i64>, Option<i64>, Option<i32>, Option<String>) {
-    let v: serde_json::Value = match serde_json::from_str(json) {
-        Ok(v) => v,
+    let value: serde_json::Value = match serde_json::from_str(json) {
+        Ok(value) => value,
         Err(_) => return (None, None, None, None),
     };
-    let online = v.pointer("/players/online").and_then(|x| x.as_i64());
-    let max = v.pointer("/players/max").and_then(|x| x.as_i64());
-    let protocol = v.pointer("/version/protocol").and_then(|x| x.as_i64()).map(|p| p as i32);
-    let version_name = v.pointer("/version/name").and_then(|x| x.as_str()).map(|s| s.to_string());
+    let online = value.pointer("/players/online").and_then(|x| x.as_i64());
+    let max = value.pointer("/players/max").and_then(|x| x.as_i64());
+    let protocol = value.pointer("/version/protocol").and_then(|x| x.as_i64()).map(|x| x as i32);
+    let version_name = value.pointer("/version/name").and_then(|x| x.as_str()).map(|x| x.to_string());
     (online, max, protocol, version_name)
 }
 
-fn err(msg: &str) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, msg.to_string())
+fn failure(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, message.to_string())
 }

@@ -1,13 +1,11 @@
-//! MC-Stress: load/stress test per server Minecraft.
-//! Client raw su tokio (offline-mode) + dashboard web axum con breaking point.
-
 mod bot;
-mod ids;
-mod manager;
 mod protocol;
 mod slp;
+mod swarm;
+mod versions;
 
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,113 +15,110 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 
-use manager::{Manager, StartReq};
+use swarm::{BotSwarm, StartRequest};
 
 #[derive(Clone)]
 struct AppState {
-    mgr: Arc<Manager>,
+    swarm: Arc<BotSwarm>,
 }
 
 #[tokio::main]
 async fn main() {
-    let mgr = Manager::new();
+    let swarm = BotSwarm::new();
+    spawn_metrics_loop(swarm.clone());
 
-    // Loop metriche: ogni secondo SLP (latenza/online), breaking point, broadcast.
-    {
-        let mgr = mgr.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(1));
-            loop {
-                tick.tick().await;
-                let mut latency = None;
-                let mut online = None;
-                let mut max = None;
-                if let Some((host, port, protocol)) = mgr.last_cfg().await {
-                    if mgr.running.load(std::sync::atomic::Ordering::SeqCst) {
-                        if let Ok(st) = slp::ping(&host, port, protocol).await {
-                            latency = Some(st.latency_ms);
-                            online = st.online;
-                            max = st.max;
-                        }
-                    }
-                }
-                mgr.observe(latency).await;
-                let json = mgr.stats_json(latency, online, max).await;
-                mgr.broadcast(json);
-            }
-        });
-    }
-
-    let state = AppState { mgr };
+    let state = AppState { swarm };
     let app = Router::new()
         .route("/", get(index))
         .route("/style.css", get(style))
-        .route("/app.js", get(appjs))
-        .route("/api/start", post(api_start))
-        .route("/api/stop", post(api_stop))
-        .route("/ws", get(ws_handler))
+        .route("/app.js", get(app_js))
+        .route("/api/start", post(start))
+        .route("/api/stop", post(stop))
+        .route("/ws", get(websocket))
         .with_state(state);
 
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3000);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(addr).await.expect("bind");
-    println!("\n  MC-Stress dashboard attiva su http://localhost:{port}\n");
+    let port: u16 = std::env::var("PORT").ok().and_then(|value| value.parse().ok()).unwrap_or(3000);
+    let address = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = TcpListener::bind(address).await.expect("bind");
+    println!("\n  MC-Stress attivo su http://localhost:{port}\n");
     axum::serve(listener, app).await.expect("serve");
 }
 
-// --- Handlers statici ---
+fn spawn_metrics_loop(swarm: Arc<BotSwarm>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            let mut latency = None;
+            let mut online = None;
+            let mut max = None;
+            if let Some((host, port, protocol)) = swarm.endpoint().await {
+                if swarm.running.load(Ordering::SeqCst) {
+                    if let Ok(status) = slp::ping(&host, port, protocol).await {
+                        latency = Some(status.latency_ms);
+                        online = status.online;
+                        max = status.max;
+                    }
+                }
+            }
+            swarm.observe(latency).await;
+            let payload = swarm.stats_json(latency, online, max).await;
+            swarm.broadcast(payload);
+        }
+    });
+}
 
 async fn index() -> Response {
-    html(include_str!("../public/index.html"))
+    serve_html(include_str!("../public/index.html"))
 }
+
 async fn style() -> Response {
     ([(header::CONTENT_TYPE, "text/css")], include_str!("../public/style.css")).into_response()
 }
-async fn appjs() -> Response {
+
+async fn app_js() -> Response {
     ([(header::CONTENT_TYPE, "application/javascript")], include_str!("../public/app.js")).into_response()
 }
-fn html(body: &'static str) -> Response {
+
+fn serve_html(body: &'static str) -> Response {
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
 }
 
-// --- API ---
-
-async fn api_start(State(st): State<AppState>, Json(req): Json<StartReq>) -> Response {
-    match st.mgr.start(req).await {
+async fn start(State(state): State<AppState>, Json(request): Json<StartRequest>) -> Response {
+    match state.swarm.start(request).await {
         Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "ok": false, "error": e }))).into_response(),
+        Err(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": message })),
+        )
+            .into_response(),
     }
 }
 
-async fn api_stop(State(st): State<AppState>) -> Response {
-    st.mgr.stop().await;
+async fn stop(State(state): State<AppState>) -> Response {
+    state.swarm.stop().await;
     Json(serde_json::json!({ "ok": true })).into_response()
 }
 
-// --- WebSocket ---
-
-async fn ws_handler(ws: WebSocketUpgrade, State(st): State<AppState>) -> Response {
-    ws.on_upgrade(move |socket| ws_loop(socket, st.mgr.clone()))
+async fn websocket(upgrade: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+    upgrade.on_upgrade(move |socket| forward_updates(socket, state.swarm.clone()))
 }
 
-async fn ws_loop(socket: WebSocket, mgr: Arc<Manager>) {
-    use futures_util::StreamExt;
+async fn forward_updates(socket: WebSocket, swarm: Arc<BotSwarm>) {
     let (mut sender, mut receiver) = socket.split();
-    let mut rx = mgr.subscribe();
+    let mut updates = swarm.subscribe();
 
-    // Task di invio: inoltra ogni messaggio broadcast al client.
     let send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            if sender.send(Message::Text(msg)).await.is_err() {
+        while let Ok(message) = updates.recv().await {
+            if sender.send(Message::Text(message)).await.is_err() {
                 break;
             }
         }
     });
 
-    // Scarta i messaggi in ingresso finche' il socket vive.
     while let Some(Ok(_)) = receiver.next().await {}
     send_task.abort();
 }

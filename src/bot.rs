@@ -1,10 +1,3 @@
-//! Un singolo bot: client raw, offline-mode. Fa handshake -> login (con
-//! compressione) -> configuration -> play, poi tiene viva la connessione
-//! (keep-alive), conferma i teleport, invia la view distance e si muove per
-//! disperdersi. In "lite" dopo la dispersione sta fermo (zero costo), in
-//! "active" continua a muoversi leggermente. Multi-protocollo: gli ID e i
-//! formati arrivano dallo `Spec` della versione.
-
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,246 +7,239 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Instant};
 
-use crate::ids::{self, Spec};
-use crate::manager::Manager;
-use crate::protocol::{self as proto, Reader};
+use crate::swarm::BotSwarm;
+use crate::protocol::{self, PayloadReader};
+use crate::versions::{self, ProtocolSpec};
 
 #[derive(Clone)]
 pub struct BotConfig {
     pub host: String,
     pub port: u16,
-    pub spec: &'static Spec,
+    pub spec: &'static ProtocolSpec,
     pub view_distance: i8,
-    pub spread_secs: f64,
-    pub active: bool, // false = lite
+    pub spread_seconds: f64,
+    pub active: bool,
 }
 
-const WALK_SPEED: f64 = 4.3; // blocchi/s di un player che cammina
+const WALK_SPEED_BLOCKS_PER_SECOND: f64 = 4.3;
 
-/// Decrementa `alive`/`moving` anche se il task viene abortito (Drop su stack).
-struct Guard {
-    mgr: Arc<Manager>,
-    counter: Counter,
-}
-#[derive(Clone, Copy)]
-enum Counter {
-    Alive,
+enum Tracked {
+    Connected,
     Moving,
 }
-impl Guard {
-    fn new(mgr: Arc<Manager>, counter: Counter) -> Self {
-        match counter {
-            Counter::Alive => mgr.alive.fetch_add(1, Ordering::Relaxed),
-            Counter::Moving => mgr.moving.fetch_add(1, Ordering::Relaxed),
+
+struct CountScope {
+    swarm: Arc<BotSwarm>,
+    tracked: Tracked,
+}
+
+impl CountScope {
+    fn enter(swarm: Arc<BotSwarm>, tracked: Tracked) -> Self {
+        match tracked {
+            Tracked::Connected => swarm.connected.fetch_add(1, Ordering::Relaxed),
+            Tracked::Moving => swarm.moving.fetch_add(1, Ordering::Relaxed),
         };
-        Guard { mgr, counter }
+        CountScope { swarm, tracked }
     }
 }
-impl Drop for Guard {
+
+impl Drop for CountScope {
     fn drop(&mut self) {
-        match self.counter {
-            Counter::Alive => self.mgr.alive.fetch_sub(1, Ordering::Relaxed),
-            Counter::Moving => self.mgr.moving.fetch_sub(1, Ordering::Relaxed),
+        match self.tracked {
+            Tracked::Connected => self.swarm.connected.fetch_sub(1, Ordering::Relaxed),
+            Tracked::Moving => self.swarm.moving.fetch_sub(1, Ordering::Relaxed),
         };
     }
 }
 
-pub async fn run_bot(cfg: BotConfig, username: String, mgr: Arc<Manager>) {
-    if let Err(e) = connect_and_play(&cfg, &username, &mgr).await {
-        mgr.errors.fetch_add(1, Ordering::Relaxed);
-        if mgr.errors.load(Ordering::Relaxed) <= 8 {
-            mgr.log(format!("{username}: {e}"));
+pub async fn run_bot(config: BotConfig, username: String, swarm: Arc<BotSwarm>) {
+    if let Err(reason) = join_and_hold(&config, &username, &swarm).await {
+        swarm.errors.fetch_add(1, Ordering::Relaxed);
+        if swarm.errors.load(Ordering::Relaxed) <= 8 {
+            swarm.log(format!("{username}: {reason}"));
         }
     }
 }
 
-async fn connect_and_play(
-    cfg: &BotConfig,
+async fn join_and_hold(
+    config: &BotConfig,
     username: &str,
-    mgr: &Arc<Manager>,
+    swarm: &Arc<BotSwarm>,
 ) -> std::io::Result<()> {
-    let spec = cfg.spec;
+    let spec = config.spec;
     let stream = tokio::time::timeout(
         Duration::from_secs(10),
-        TcpStream::connect((cfg.host.as_str(), cfg.port)),
+        TcpStream::connect((config.host.as_str(), config.port)),
     )
     .await
-    .map_err(|_| err("connect timeout"))??;
+    .map_err(|_| failure("connect timeout"))??;
     stream.set_nodelay(true).ok();
 
-    let (mut rd, mut wr) = stream.into_split();
-    let mut threshold: i32 = -1;
+    let (mut reader, mut writer) = stream.into_split();
+    let mut compression_threshold: i32 = -1;
 
-    // Handshake (next state = 2: login)
-    let mut b = Vec::new();
-    proto::w_varint(&mut b, spec.protocol);
-    proto::w_string(&mut b, &cfg.host);
-    proto::w_u16(&mut b, cfg.port);
-    proto::w_varint(&mut b, 2);
-    proto::write_packet(&mut wr, threshold, ids::SB_HANDSHAKE, &b).await?;
+    let mut handshake = Vec::new();
+    protocol::write_varint(&mut handshake, spec.protocol);
+    protocol::write_string(&mut handshake, &config.host);
+    protocol::write_u16(&mut handshake, config.port);
+    protocol::write_varint(&mut handshake, 2);
+    protocol::write_packet(&mut writer, compression_threshold, versions::SB_HANDSHAKE, &handshake).await?;
 
-    // Login Start (name + UUID casuale: in offline il server lo rigenera)
-    let mut b = Vec::new();
-    proto::w_string(&mut b, username);
-    let uuid: [u8; 16] = rand::thread_rng().gen();
-    b.extend_from_slice(&uuid);
-    proto::write_packet(&mut wr, threshold, ids::SB_LOGIN_START, &b).await?;
+    let mut login_start = Vec::new();
+    protocol::write_string(&mut login_start, username);
+    let random_uuid: [u8; 16] = rand::thread_rng().gen();
+    login_start.extend_from_slice(&random_uuid);
+    protocol::write_packet(&mut writer, compression_threshold, versions::SB_LOGIN_START, &login_start).await?;
 
-    // Login loop
     loop {
-        let (id, data) = proto::read_packet(&mut rd, threshold).await?;
-        if id == ids::CB_LOGIN_SET_COMPRESSION {
-            let mut r = Reader::new(&data);
-            threshold = r.varint()?;
-        } else if id == ids::CB_LOGIN_SUCCESS {
-            proto::write_packet(&mut wr, threshold, ids::SB_LOGIN_ACK, &[]).await?;
+        let (packet_id, body) = protocol::read_packet(&mut reader, compression_threshold).await?;
+        if packet_id == versions::CB_LOGIN_SET_COMPRESSION {
+            compression_threshold = PayloadReader::new(&body).read_varint()?;
+        } else if packet_id == versions::CB_LOGIN_SUCCESS {
+            protocol::write_packet(&mut writer, compression_threshold, versions::SB_LOGIN_ACKNOWLEDGED, &[]).await?;
             break;
-        } else if id == ids::CB_LOGIN_DISCONNECT {
-            return Err(err("login disconnect"));
-        } else if id == ids::CB_LOGIN_ENCRYPTION_REQUEST {
-            return Err(err("server in online-mode: non supportato (serve offline-mode)"));
+        } else if packet_id == versions::CB_LOGIN_DISCONNECT {
+            return Err(failure("login disconnect"));
+        } else if packet_id == versions::CB_LOGIN_ENCRYPTION_REQUEST {
+            return Err(failure("server in online-mode: serve offline-mode"));
         }
     }
 
-    // Configuration
-    send_client_information(&mut wr, threshold, cfg).await?;
+    send_client_information(&mut writer, compression_threshold, config).await?;
     loop {
-        let (id, data) = proto::read_packet(&mut rd, threshold).await?;
-        if id == spec.cb_cfg_keepalive {
-            proto::write_packet(&mut wr, threshold, spec.sb_cfg_keepalive, &data).await?;
-        } else if id == spec.cb_cfg_ping {
-            proto::write_packet(&mut wr, threshold, spec.sb_cfg_pong, &data).await?;
-        } else if id == spec.cb_cfg_known_packs {
-            let mut b = Vec::new();
-            proto::w_varint(&mut b, 0); // 0 pacchetti noti
-            proto::write_packet(&mut wr, threshold, spec.sb_cfg_known_packs, &b).await?;
-        } else if id == spec.cb_cfg_finish {
-            proto::write_packet(&mut wr, threshold, spec.sb_cfg_finish, &[]).await?;
+        let (packet_id, body) = protocol::read_packet(&mut reader, compression_threshold).await?;
+        if packet_id == spec.config_clientbound_keep_alive {
+            protocol::write_packet(&mut writer, compression_threshold, spec.config_serverbound_keep_alive, &body).await?;
+        } else if packet_id == spec.config_clientbound_ping {
+            protocol::write_packet(&mut writer, compression_threshold, spec.config_serverbound_pong, &body).await?;
+        } else if packet_id == spec.config_clientbound_known_packs {
+            let mut empty = Vec::new();
+            protocol::write_varint(&mut empty, 0);
+            protocol::write_packet(&mut writer, compression_threshold, spec.config_serverbound_known_packs, &empty).await?;
+        } else if packet_id == spec.config_clientbound_finish {
+            protocol::write_packet(&mut writer, compression_threshold, spec.config_serverbound_finish, &[]).await?;
             break;
-        } else if id == spec.cb_cfg_disconnect {
-            return Err(err("config disconnect"));
+        } else if packet_id == spec.config_clientbound_disconnect {
+            return Err(failure("config disconnect"));
         }
     }
 
-    // Play
-    let _alive = Guard::new(mgr.clone(), Counter::Alive);
+    let _connected = CountScope::enter(swarm.clone(), Tracked::Connected);
 
-    let (tx, mut rx) = mpsc::channel::<(i32, Vec<u8>)>(64);
-    let writer = tokio::spawn(async move {
-        while let Some((id, body)) = rx.recv().await {
-            if proto::write_packet(&mut wr, threshold, id, &body).await.is_err() {
+    let (outgoing, mut outgoing_rx) = mpsc::channel::<(i32, Vec<u8>)>(64);
+    let writer_task = tokio::spawn(async move {
+        while let Some((packet_id, body)) = outgoing_rx.recv().await {
+            if protocol::write_packet(&mut writer, compression_threshold, packet_id, &body).await.is_err() {
                 break;
             }
         }
     });
 
-    let pos: Arc<Mutex<Option<(f64, f64, f64)>>> = Arc::new(Mutex::new(None));
-    let mover = tokio::spawn(movement(cfg.clone(), mgr.clone(), tx.clone(), pos.clone()));
-    let result = play_loop(&mut rd, threshold, spec, &tx, &pos).await;
+    let position: Arc<Mutex<Option<(f64, f64, f64)>>> = Arc::new(Mutex::new(None));
+    let movement_task = tokio::spawn(wander(config.clone(), swarm.clone(), outgoing.clone(), position.clone()));
+    let outcome = hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position).await;
 
-    mover.abort();
-    drop(tx);
-    writer.abort();
-    result
+    movement_task.abort();
+    drop(outgoing);
+    writer_task.abort();
+    outcome
 }
 
-async fn play_loop(
-    rd: &mut (impl tokio::io::AsyncRead + Unpin),
-    threshold: i32,
-    spec: &'static Spec,
-    tx: &mpsc::Sender<(i32, Vec<u8>)>,
-    pos: &Arc<Mutex<Option<(f64, f64, f64)>>>,
+async fn hold_in_play(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    compression_threshold: i32,
+    spec: &'static ProtocolSpec,
+    outgoing: &mpsc::Sender<(i32, Vec<u8>)>,
+    position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
 ) -> std::io::Result<()> {
     loop {
-        let (id, data) = proto::read_packet(rd, threshold).await?;
-        if id == spec.cb_play_keepalive {
-            let _ = tx.send((spec.sb_play_keepalive, data)).await;
-        } else if id == spec.cb_play_sync_pos {
-            let mut r = Reader::new(&data);
-            let (x, y, z, teleport_id) = if spec.pos_v2 {
-                // 1.21.2+: teleport_id, x,y,z, vx,vy,vz, yaw,pitch, flags(i32)
-                let tid = r.varint()?;
-                let x = r.f64()?;
-                let y = r.f64()?;
-                let z = r.f64()?;
-                (x, y, z, tid)
+        let (packet_id, body) = protocol::read_packet(reader, compression_threshold).await?;
+        if packet_id == spec.play_clientbound_keep_alive {
+            let _ = outgoing.send((spec.play_serverbound_keep_alive, body)).await;
+        } else if packet_id == spec.play_clientbound_synchronize_position {
+            let mut reader = PayloadReader::new(&body);
+            let (x, y, z, teleport_id) = if spec.teleport_id_leads_position {
+                let teleport_id = reader.read_varint()?;
+                let x = reader.read_f64()?;
+                let y = reader.read_f64()?;
+                let z = reader.read_f64()?;
+                (x, y, z, teleport_id)
             } else {
-                // <=1.21.1: x,y,z, yaw,pitch, flags(u8), teleport_id
-                let x = r.f64()?;
-                let y = r.f64()?;
-                let z = r.f64()?;
-                r.take(4)?; // yaw
-                r.take(4)?; // pitch
-                r.take(1)?; // flags
-                let tid = r.varint()?;
-                (x, y, z, tid)
+                let x = reader.read_f64()?;
+                let y = reader.read_f64()?;
+                let z = reader.read_f64()?;
+                reader.skip(9)?;
+                let teleport_id = reader.read_varint()?;
+                (x, y, z, teleport_id)
             };
 
-            let mut tb = Vec::new();
-            proto::w_varint(&mut tb, teleport_id);
-            let _ = tx.send((spec.sb_play_confirm_teleport, tb)).await;
+            let mut confirm = Vec::new();
+            protocol::write_varint(&mut confirm, teleport_id);
+            let _ = outgoing.send((spec.play_serverbound_confirm_teleport, confirm)).await;
 
-            *pos.lock().await = Some((x, y, z));
-            let _ = tx.send((spec.sb_play_set_pos, set_position_body(x, y, z, spec.pos_v2))).await;
-        } else if id == spec.cb_play_disconnect {
-            return Ok(()); // fine normale
+            *position.lock().await = Some((x, y, z));
+            let _ = outgoing
+                .send((spec.play_serverbound_set_position, set_position_body(x, y, z, spec.teleport_id_leads_position)))
+                .await;
+        } else if packet_id == spec.play_clientbound_disconnect {
+            return Ok(());
         }
     }
 }
 
-async fn movement(
-    cfg: BotConfig,
-    mgr: Arc<Manager>,
-    tx: mpsc::Sender<(i32, Vec<u8>)>,
-    pos: Arc<Mutex<Option<(f64, f64, f64)>>>,
+async fn wander(
+    config: BotConfig,
+    swarm: Arc<BotSwarm>,
+    outgoing: mpsc::Sender<(i32, Vec<u8>)>,
+    position: Arc<Mutex<Option<(f64, f64, f64)>>>,
 ) {
-    let spec = cfg.spec;
+    let spec = config.spec;
     loop {
-        if pos.lock().await.is_some() {
+        if position.lock().await.is_some() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    if !(cfg.spread_secs > 0.0 || cfg.active) {
-        return; // lite senza dispersione: resta fermo
+    if !(config.spread_seconds > 0.0 || config.active) {
+        return;
     }
 
-    let _moving = Guard::new(mgr.clone(), Counter::Moving);
-    let yaw: f64 = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
-    let vx = -yaw.sin() * WALK_SPEED / 10.0;
-    let vz = yaw.cos() * WALK_SPEED / 10.0;
+    let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
+    let heading: f64 = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
+    let velocity_x = -heading.sin() * WALK_SPEED_BLOCKS_PER_SECOND / 10.0;
+    let velocity_z = heading.cos() * WALK_SPEED_BLOCKS_PER_SECOND / 10.0;
     let jitter = rand::thread_rng().gen_range(0.6..1.4);
-    let deadline = Instant::now() + Duration::from_secs_f64(cfg.spread_secs.max(0.5) * jitter);
+    let disperse_until = Instant::now() + Duration::from_secs_f64(config.spread_seconds.max(0.5) * jitter);
 
     let mut tick = interval(Duration::from_millis(100));
     loop {
         tick.tick().await;
-        if Instant::now() >= deadline {
+        if Instant::now() >= disperse_until {
             break;
         }
-        let mut p = pos.lock().await;
-        if let Some((x, y, z)) = p.as_mut() {
-            *x += vx;
-            *z += vz;
-            if tx.send((spec.sb_play_set_pos, set_position_body(*x, *y, *z, spec.pos_v2))).await.is_err() {
+        let mut current = position.lock().await;
+        if let Some((x, y, z)) = current.as_mut() {
+            *x += velocity_x;
+            *z += velocity_z;
+            if outgoing.send((spec.play_serverbound_set_position, set_position_body(*x, *y, *z, spec.teleport_id_leads_position))).await.is_err() {
                 return;
             }
         }
     }
     drop(_moving);
 
-    if cfg.active {
-        let _moving = Guard::new(mgr.clone(), Counter::Moving);
+    if config.active {
+        let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
         let mut tick = interval(Duration::from_secs(1));
         loop {
             tick.tick().await;
-            let a: f64 = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
-            let mut p = pos.lock().await;
-            if let Some((x, y, z)) = p.as_mut() {
-                *x += a.cos() * 0.6;
-                *z += a.sin() * 0.6;
-                if tx.send((spec.sb_play_set_pos, set_position_body(*x, *y, *z, spec.pos_v2))).await.is_err() {
+            let angle: f64 = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
+            let mut current = position.lock().await;
+            if let Some((x, y, z)) = current.as_mut() {
+                *x += angle.cos() * 0.6;
+                *z += angle.sin() * 0.6;
+                if outgoing.send((spec.play_serverbound_set_position, set_position_body(*x, *y, *z, spec.teleport_id_leads_position))).await.is_err() {
                     return;
                 }
             }
@@ -261,39 +247,39 @@ async fn movement(
     }
 }
 
-fn set_position_body(x: f64, y: f64, z: f64, pos_v2: bool) -> Vec<u8> {
-    let mut b = Vec::with_capacity(25);
-    proto::w_f64(&mut b, x);
-    proto::w_f64(&mut b, y);
-    proto::w_f64(&mut b, z);
-    if pos_v2 {
-        b.push(0x01); // flags: bit0 = on_ground
+pub(crate) fn set_position_body(x: f64, y: f64, z: f64, modern_flags: bool) -> Vec<u8> {
+    let mut body = Vec::with_capacity(25);
+    protocol::write_f64(&mut body, x);
+    protocol::write_f64(&mut body, y);
+    protocol::write_f64(&mut body, z);
+    if modern_flags {
+        body.push(0x01);
     } else {
-        proto::w_bool(&mut b, true); // on_ground
+        protocol::write_bool(&mut body, true);
     }
-    b
+    body
 }
 
 async fn send_client_information(
-    wr: &mut (impl tokio::io::AsyncWrite + Unpin),
-    threshold: i32,
-    cfg: &BotConfig,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    compression_threshold: i32,
+    config: &BotConfig,
 ) -> std::io::Result<()> {
-    let mut b = Vec::new();
-    proto::w_string(&mut b, "en_us");
-    b.push(cfg.view_distance as u8); // view distance -> carica i chunk lato server
-    proto::w_varint(&mut b, 0); // chat mode: enabled
-    proto::w_bool(&mut b, true); // chat colors
-    b.push(0x7f); // skin parts
-    proto::w_varint(&mut b, 1); // main hand: right
-    proto::w_bool(&mut b, false); // text filtering
-    proto::w_bool(&mut b, true); // allow server listings
-    if cfg.spec.client_info_particle {
-        proto::w_varint(&mut b, 0); // particle status: all (1.21.2+)
+    let mut body = Vec::new();
+    protocol::write_string(&mut body, "en_us");
+    body.push(config.view_distance as u8);
+    protocol::write_varint(&mut body, 0);
+    protocol::write_bool(&mut body, true);
+    body.push(0x7f);
+    protocol::write_varint(&mut body, 1);
+    protocol::write_bool(&mut body, false);
+    protocol::write_bool(&mut body, true);
+    if config.spec.client_information_has_particle_status {
+        protocol::write_varint(&mut body, 0);
     }
-    proto::write_packet(wr, threshold, cfg.spec.sb_cfg_client_info, &b).await
+    protocol::write_packet(writer, compression_threshold, config.spec.config_serverbound_client_information, &body).await
 }
 
-fn err(msg: &str) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, msg.to_string())
+fn failure(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, message.to_string())
 }
