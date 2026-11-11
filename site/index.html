@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MC-Stress — Minecraft load testing in Rust</title>
+  <meta name="description" content="MC-Stress: raw Minecraft protocol bots on tokio, a live axum dashboard and breaking-point detection for load testing Minecraft servers.">
+  <meta name="theme-color" content="#0c0a0b">
+  <meta property="og:title" content="MC-Stress">
+  <meta property="og:description" content="Load test your Minecraft server with lightweight raw-protocol bots and find its breaking point.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-in">
+      <a class="brand" href="#top" aria-label="MC-Stress home">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect x=".5" y=".5" width="31" height="31" rx="9" fill="#1b1012" stroke="#3a2225"/><line x1="6" y1="18.5" x2="26" y2="18.5" stroke="#ff5c61" stroke-width="1.4" stroke-dasharray="2.2 2.2" opacity=".7"/><path d="M6 22.5l4.5-1.8 3.8 1.2L19 8.5l4 11.5 3-2" fill="none" stroke="#f0434a" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="19" cy="8.5" r="2.1" fill="#f0883e"/></svg>
+        <span>MC-Stress</span>
+      </a>
+      <nav class="nav">
+        <a href="#features">Features</a>
+        <a href="#models">Bot models</a>
+        <a href="#versions">Versions</a>
+        <a href="#start">Quick start</a>
+      </nav>
+      <a class="btn sec sm" href="https://github.com/OnlyDehBest/MC-Stress">
+        <svg class="ico fill" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.72 1.22 1.87.87 2.33.67.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.22 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.66 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0z"/></svg>
+        <span class="hide-sm">GitHub</span>
+      </a>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <span class="chip">Rust · tokio · axum</span>
+        <h1>Find your Minecraft server's <em>breaking point</em>.</h1>
+        <p class="lead">MC-Stress spawns hundreds of raw-protocol bots that behave like real players — joining in batches, spreading out, walking and loading chunks — while a live dashboard tracks latency, kicks and the moment your server starts to give.</p>
+        <div class="cta">
+          <a class="btn pri" href="#start"><svg class="ico fill" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3l9 5-9 5z"/></svg>Get started</a>
+          <a class="btn sec" href="https://github.com/OnlyDehBest/MC-Stress">View source</a>
+        </div>
+        <ul class="facts">
+          <li><b>7</b><span>bot models</span></li>
+          <li><b>12</b><span>protocol versions</span></li>
+          <li><b>1</b><span>binary, no deps</span></li>
+        </ul>
+      </div>
+
+      <div class="console panel" aria-label="Dashboard preview">
+        <div class="ph">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="ph-title">Load console</span>
+          <span class="status live"><span class="d"></span><span id="demoState">ramping</span></span>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><div class="sl">Bots online</div><div class="sv" id="dBots">0</div></div>
+          <div class="kpi"><div class="sl">Latency</div><div class="sv" id="dLat">—</div></div>
+          <div class="kpi"><div class="sl">Breaking point</div><div class="sv" id="dBp">—</div></div>
+        </div>
+        <div class="chartpad">
+          <svg id="demoChart" viewBox="0 0 400 150" preserveAspectRatio="none" role="img" aria-label="Simulated chart of bots and latency over time"></svg>
+          <div class="legend"><span><i style="background:var(--acc)"></i>bots</span><span><i style="background:var(--high)"></i>latency ms</span><span class="muted">simulated</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="wrap block">
+      <h2>Built to stress the server, not your machine</h2>
+      <p class="sec-sub">No headless game clients, no Node runtime — every bot is a few kilobytes of async Rust speaking the Minecraft protocol directly.</p>
+      <div class="grid">
+        <article class="card">
+          <svg class="ico lg" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>
+          <h3>Raw protocol clients</h3>
+          <p>Handshake, login, configuration and play states implemented by hand on tokio. Compression, keep-alives and teleport confirms handled per bot.</p>
+        </article>
+        <article class="card">
+          <svg class="ico lg" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l5-6 4 4 5-7 4 5"/></svg>
+          <h3>Live dashboard</h3>
+          <p>An axum web console streams bots online, movement, server latency and errors over WebSocket every second, with a load-over-time chart.</p>
+        </article>
+        <article class="card">
+          <svg class="ico lg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <h3>Breaking-point detection</h3>
+          <p>Bots join in configurable batches and intervals; MC-Stress pings the server continuously and flags the load where latency and kicks spike.</p>
+        </article>
+        <article class="card">
+          <svg class="ico lg" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/><path d="M8 4v16"/></svg>
+          <h3>Multi-protocol</h3>
+          <p>Auto-detects the server version via Server List Ping, or pin one manually. Packet IDs are mapped per version from 1.20.2 up to 26.3.</p>
+        </article>
+        <article class="card">
+          <svg class="ico lg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
+          <h3>Realistic players</h3>
+          <p>Per-bot view distance, spawn dispersion, walking and sprinting at vanilla speeds — so each bot costs the server about what a real player does.</p>
+        </article>
+        <article class="card">
+          <svg class="ico lg" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <h3>Player activity</h3>
+          <p>Optional chat messages, commands and arm swings on a timer, to exercise chat plugins, command handlers and packet listeners.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="models" class="wrap block">
+      <h2>Seven bot models, light to heavy</h2>
+      <p class="sec-sub">Pick how much each bot costs the server — from a parked connection to a sprinting explorer streaming fresh chunks.</p>
+      <div class="models panel">
+        <div class="model"><code>idle</code><span>Connect only, hold at spawn</span><div class="meter" style="--w:8%"></div></div>
+        <div class="model"><code>sentry</code><span>Disperse, then hold (default)</span><div class="meter" style="--w:22%"></div></div>
+        <div class="model"><code>spread</code><span>Disperse 4× wider, then hold</span><div class="meter" style="--w:36%"></div></div>
+        <div class="model"><code>wanderer</code><span>Disperse, then gentle wander</span><div class="meter" style="--w:50%"></div></div>
+        <div class="model"><code>movement</code><span>Constant in-place movement, 20 Hz</span><div class="meter" style="--w:62%"></div></div>
+        <div class="model"><code>runner</code><span>Constant roaming at walk speed</span><div class="meter" style="--w:80%"></div></div>
+        <div class="model"><code>voyager</code><span>Sprinting travel, max chunk load</span><div class="meter" style="--w:100%"></div></div>
+        <div class="model-axis"><span>lighter</span><span>server cost</span><span>heavier</span></div>
+      </div>
+    </section>
+
+    <section id="versions" class="wrap block">
+      <h2>Supported versions</h2>
+      <p class="sec-sub">Protocol is detected automatically via Server List Ping; unrecognised versions fall back to 1.21.1, or you can force one manually.</p>
+      <div class="versions">
+        <span class="ver"><b>1.20.2</b><small>764</small></span>
+        <span class="ver"><b>1.20.4</b><small>765</small></span>
+        <span class="ver"><b>1.20.6</b><small>766</small></span>
+        <span class="ver"><b>1.21.1</b><small>767</small></span>
+        <span class="ver"><b>1.21.3</b><small>768</small></span>
+        <span class="ver"><b>1.21.4</b><small>769</small></span>
+        <span class="ver"><b>1.21.5</b><small>770</small></span>
+        <span class="ver"><b>1.21.6</b><small>771</small></span>
+        <span class="ver"><b>1.21.8</b><small>772</small></span>
+        <span class="ver"><b>26.1</b><small>773</small></span>
+        <span class="ver"><b>26.2</b><small>774</small></span>
+        <span class="ver new"><b>26.3</b><small>775</small></span>
+      </div>
+    </section>
+
+    <section id="start" class="wrap block">
+      <h2>Quick start</h2>
+      <p class="sec-sub">Requires a Rust toolchain. The dashboard is bundled into the binary.</p>
+      <div class="steps">
+        <div class="step">
+          <span class="n">1</span>
+          <div>
+            <h3>Build and run</h3>
+            <div class="code"><button class="copy" data-copy="git clone https://github.com/OnlyDehBest/MC-Stress&#10;cd MC-Stress&#10;cargo run --release">Copy</button><pre><span class="p">$</span> git clone https://github.com/OnlyDehBest/MC-Stress
+<span class="p">$</span> cd MC-Stress
+<span class="p">$</span> cargo run --release</pre></div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="n">2</span>
+          <div>
+            <h3>Open the console</h3>
+            <p>Go to <code>http://localhost:3000</code>. Set <code>PORT</code> to change it:</p>
+            <div class="code"><button class="copy" data-copy="PORT=8080 cargo run --release">Copy</button><pre><span class="p">$</span> PORT=8080 cargo run --release</pre></div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="n">3</span>
+          <div>
+            <h3>Configure and press Start</h3>
+            <p>Host, port, bot count, batch size, interval, view distance, dispersion and bot model. Run <code>/spark tps</code> alongside for true TPS.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="note">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <p>The target server must run with <code>online-mode=false</code>, and movement anti-cheat should be disabled during the test (bots move on a constant <code>y</code>). Only stress-test servers you own or are authorised to test.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot wrap">
+    <span>MC-Stress · open source on <a href="https://github.com/OnlyDehBest/MC-Stress">GitHub</a></span>
+    <span class="muted">Not affiliated with Mojang or Microsoft.</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
