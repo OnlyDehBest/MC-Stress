@@ -38,6 +38,7 @@ pub struct ProtocolSpec {
     pub play_serverbound_player_action: i32,
     pub teleport_id_leads_position: bool,
     pub client_information_has_particle_status: bool,
+    pub chat_message_has_checksum: bool,
 }
 
 struct ConfigurationIds {
@@ -125,6 +126,7 @@ const fn describe(
         play_serverbound_player_action: activity.player_action,
         teleport_id_leads_position,
         client_information_has_particle_status,
+        chat_message_has_checksum: protocol >= 770,
     }
 }
 

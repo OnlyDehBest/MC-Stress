@@ -180,14 +180,14 @@ async fn run_activity(config: BotConfig, outgoing: mpsc::Sender<(i32, Vec<u8>)>)
             }
         }
         if let Some(message) = &config.chat_message {
-            if outgoing.send((spec.play_serverbound_chat_message, chat_message_body(message))).await.is_err() {
+            if outgoing.send((spec.play_serverbound_chat_message, chat_message_body(message, spec.chat_message_has_checksum))).await.is_err() {
                 return;
             }
         }
     }
 }
 
-fn chat_message_body(message: &str) -> Vec<u8> {
+fn chat_message_body(message: &str, has_checksum: bool) -> Vec<u8> {
     let mut body = Vec::new();
     protocol::write_string(&mut body, message);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
@@ -196,6 +196,9 @@ fn chat_message_body(message: &str) -> Vec<u8> {
     protocol::write_bool(&mut body, false);
     protocol::write_varint(&mut body, 0);
     body.extend_from_slice(&[0, 0, 0]);
+    if has_checksum {
+        body.push(0x00);
+    }
     body
 }
 
