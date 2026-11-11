@@ -31,6 +31,7 @@ There are no headless game clients and no Node runtime. Each bot is a small asyn
 - **Player activity**: optional chat messages, commands and arm swings on a timer, to exercise chat plugins, command handlers and packet listeners.
 - **Live dashboard**: bots online, moving bots, latency, players online, errors and kicks, plus a load-over-time chart, pushed over WebSocket every second.
 - **Breaking-point detection**: flags the bot count at which latency exceeds twice the baseline plus 60 ms, or at which the server starts kicking.
+- **Private link**: a random access key protects the dashboard, so you can reach it safely from your phone.
 - **Single binary**: the dashboard is embedded at compile time, with nothing extra to deploy.
 
 ## Quick start
@@ -43,23 +44,28 @@ cd MC-Stress
 cargo run --release
 ```
 
-On a desktop, the dashboard opens in your browser at **http://localhost:3000**. On a headless server (such as a VPS) there is no browser to open, so MC-Stress prints clickable links instead, including one with the machine's IP address that you can open from your PC:
+On startup MC-Stress generates a random access key and prints a **private link**. On a desktop it also opens the dashboard in your browser. On a headless server (such as a VPS) it prints a second link with the machine's IP address, which you can open from your phone or PC:
 
 ```
-  MC-Stress running on http://localhost:3000
-  Open from your PC:   http://203.0.113.10:3000
+  MC-Stress is running. Private links (keep them secret):
+
+  This machine:   http://localhost:3000/?key=WVewFhV9MdlMY6IxQ0f6WSSl
+  Phone / PC:     http://203.0.113.10:3000/?key=WVewFhV9MdlMY6IxQ0f6WSSl
 ```
 
-Set the target server and press **Start**. Stop MC-Stress with `Ctrl+C`.
+Open the link once: the browser keeps the key in a cookie, so you can bookmark the dashboard. Requests without the key get `401 Access denied`, including the API and the WebSocket. Set the target server and press **Start**. Stop MC-Stress with `Ctrl+C`.
 
-To use a different port, or to never open the browser:
+| Environment variable | Effect |
+|---|---|
+| `PORT=8080` | Listen on another port (default `3000`) |
+| `MC_STRESS_KEY=yourSecretKey` | Use a fixed key (8+ letters or digits) so the link survives restarts |
+| `NO_BROWSER=1` | Never try to open a browser |
 
 ```bash
-PORT=8080 cargo run --release
-NO_BROWSER=1 cargo run --release
+PORT=8080 MC_STRESS_KEY=myLongSecretKey123 cargo run --release
 ```
 
-> The dashboard has no authentication. On a public server, use an SSH tunnel (`ssh -L 3000:localhost:3000 user@server`) or allow port 3000 only from your IP.
+> The dashboard is served over plain HTTP, so anyone who can see your traffic can read the key. Use a long key, and on untrusted networks prefer an SSH tunnel (`ssh -L 3000:localhost:3000 user@server`).
 
 ### Server requirements
 
@@ -128,8 +134,15 @@ The dashboard is a thin client over a small API, which you can also script again
 
 ```bash
 curl -X POST http://localhost:3000/api/start \
+  -H 'Cookie: mcs_key=YOUR_KEY' \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","port":25565,"target":200,"step":10,"intervalMs":2000,"mode":"runner"}'
+```
+
+Every request needs the key, either as the `mcs_key` cookie or by visiting `/?key=…` first:
+
+```bash
+curl -X POST http://localhost:3000/api/stop -H 'Cookie: mcs_key=YOUR_KEY'
 ```
 
 Omitted fields use these defaults: `target` 20, `step` 5, `intervalMs` 3000, `viewDistance` 8, `spreadSeconds` 6, `mode` `sentry`, `actionIntervalMs` 5000.
@@ -139,6 +152,8 @@ Omitted fields use these defaults: `target` 20, `step` 5, `intervalMs` 3000, `vi
 ```
 src/
   main.rs      axum server, routes, metrics loop
+  access.rs    private-link access key
+  browser.rs   startup links, browser opening
   swarm.rs     bot orchestration, ramp-up, breaking-point logic
   bot.rs       single bot: connection, states, movement, activity
   model.rs     bot models and movement profiles

@@ -2,11 +2,12 @@ use std::io::IsTerminal;
 use std::net::{IpAddr, UdpSocket};
 use std::process::{Command, Stdio};
 
-pub fn announce(port: u16) {
-    let local = format!("http://localhost:{port}");
-    println!("\n  MC-Stress running on {}", link(&local));
+pub fn announce(port: u16, key: &str) {
+    let local = format!("http://localhost:{port}/?key={key}");
+    println!("\n  MC-Stress is running. Private links (keep them secret):\n");
+    println!("  This machine:   {}", link(&local));
     if let Some(ip) = outbound_ip() {
-        println!("  Open from your PC:   {}", link(&format!("http://{ip}:{port}")));
+        println!("  Phone / PC:     {}", link(&format!("http://{ip}:{port}/?key={key}")));
     }
     println!();
 
@@ -23,7 +24,7 @@ pub fn announce(port: u16) {
         .stderr(Stdio::null())
         .spawn();
     if spawned.is_err() {
-        println!("  Could not open a browser automatically: open {local} manually.\n");
+        println!("  Could not open a browser automatically: open one of the links above.\n");
     }
 }
 

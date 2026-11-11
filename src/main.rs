@@ -1,3 +1,4 @@
+mod access;
 mod bot;
 mod browser;
 mod model;
@@ -13,6 +14,7 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::middleware;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -32,6 +34,7 @@ async fn main() {
     let swarm = BotSwarm::new();
     spawn_metrics_loop(swarm.clone());
 
+    let key = access::AccessKey::load();
     let state = AppState { swarm };
     let app = Router::new()
         .route("/", get(index))
@@ -40,12 +43,13 @@ async fn main() {
         .route("/api/start", post(start))
         .route("/api/stop", post(stop))
         .route("/ws", get(websocket))
-        .with_state(state);
+        .with_state(state)
+        .layer(middleware::from_fn_with_state(key.clone(), access::guard));
 
     let port: u16 = std::env::var("PORT").ok().and_then(|value| value.parse().ok()).unwrap_or(3000);
     let address = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(address).await.expect("bind");
-    browser::announce(port);
+    browser::announce(port, key.value());
     axum::serve(listener, app).await.expect("serve");
 }
 
