@@ -18,8 +18,8 @@ pub struct StartRequest {
     pub port: u16,
     #[serde(default)]
     pub protocol: Option<i32>,
-    #[serde(default = "default_prefix")]
-    pub prefix: String,
+    #[serde(default = "default_nickname")]
+    pub nickname: String,
     #[serde(default = "default_target")]
     pub target: usize,
     #[serde(default = "default_step")]
@@ -32,16 +32,35 @@ pub struct StartRequest {
     pub spread_seconds: f64,
     #[serde(default = "default_mode")]
     pub mode: String,
+    #[serde(default)]
+    pub chat_message: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub swing: bool,
+    #[serde(default = "default_action_interval")]
+    pub action_interval_ms: u64,
 }
 
 fn default_port() -> u16 { 25565 }
-fn default_prefix() -> String { "Bot".to_string() }
+fn default_nickname() -> String { "Bot".to_string() }
 fn default_target() -> usize { 20 }
 fn default_step() -> usize { 5 }
 fn default_interval() -> u64 { 3000 }
 fn default_view() -> i8 { 8 }
 fn default_spread() -> f64 { 6.0 }
-fn default_mode() -> String { "lite".to_string() }
+fn default_mode() -> String { "sentry".to_string() }
+fn default_action_interval() -> u64 { 5000 }
+
+fn cleaned(value: Option<String>, strip_slash: bool) -> Option<String> {
+    let text = value?;
+    let trimmed = if strip_slash { text.trim().trim_start_matches('/') } else { text.trim() };
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
 
 struct BreakingPointState {
     baseline_latency: Option<u64>,
@@ -109,12 +128,12 @@ impl BotSwarm {
         let target = request.target.max(1);
         let step = request.step.max(1);
         let interval_ms = request.interval_ms.max(250);
-        let prefix: String = request
-            .prefix
+        let nickname: String = request
+            .nickname
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
             .collect();
-        let prefix = if prefix.is_empty() { "Bot".to_string() } else { prefix };
+        let nickname = if nickname.is_empty() { "Bot".to_string() } else { nickname };
 
         let spec = match self.resolve_spec(&request).await {
             Ok(spec) => spec,
@@ -125,6 +144,8 @@ impl BotSwarm {
         };
 
         let model = BotModel::parse(&request.mode);
+        let chat_message = cleaned(request.chat_message.clone(), false);
+        let command = cleaned(request.command.clone(), true);
         let config = BotConfig {
             host: request.host.clone(),
             port: request.port,
@@ -132,6 +153,10 @@ impl BotSwarm {
             view_distance,
             spread_seconds: request.spread_seconds.max(0.0),
             model,
+            chat_message: chat_message.clone(),
+            command: command.clone(),
+            swing: request.swing,
+            action_interval: Duration::from_millis(request.action_interval_ms.max(500)),
         };
 
         self.connected.store(0, Ordering::Relaxed);
@@ -147,8 +172,20 @@ impl BotSwarm {
             previous_errors: 0,
         };
 
+        let mut actions = Vec::new();
+        if chat_message.is_some() {
+            actions.push("chat");
+        }
+        if command.is_some() {
+            actions.push("command");
+        }
+        if request.swing {
+            actions.push("swing");
+        }
+        let actions_label = if actions.is_empty() { "none".to_string() } else { actions.join("+") };
+
         self.log(format!(
-            "Start: {target} bots on {}:{} · {} (proto {}) · batches {step}/{interval_ms}ms · view {view_distance} chunks · spread {}s · model {}",
+            "Start: {target} bots on {}:{} · nick {nickname} · {} (proto {}) · batches {step}/{interval_ms}ms · view {view_distance} chunks · spread {}s · model {} · actions {actions_label}",
             config.host,
             config.port,
             spec.name,
@@ -169,7 +206,7 @@ impl BotSwarm {
                 let mut bots = swarm.bots.lock().await;
                 for _ in 0..batch {
                     let sequence = swarm.dispatched.fetch_add(1, Ordering::Relaxed) + 1;
-                    let username = format!("{prefix}_{sequence}");
+                    let username = format!("{nickname}_{sequence}");
                     bots.spawn(run_bot(config.clone(), username, swarm.clone()));
                 }
                 drop(bots);

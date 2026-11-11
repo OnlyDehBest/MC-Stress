@@ -33,8 +33,14 @@
         <div class="bar">
           <div class="fld"><label>Host</label><input id="host" value="localhost" style="width:120px"></div>
           <div class="fld"><label>Port</label><input id="port" type="number" value="25565" style="width:78px"></div>
-          <div class="fld"><label>Protocol</label><input id="protocol" type="number" placeholder="auto" style="width:80px"></div>
-          <div class="fld"><label>Prefix</label><input id="prefix" value="Bot" style="width:84px"></div>
+          <div class="fld"><label>Nickname</label><input id="nickname" value="Bot" style="width:92px"></div>
+          <div class="fld"><label>Protocol mode</label>
+            <select id="protocolMode" style="width:116px;font-family:var(--fs)">
+              <option value="auto" selected>auto (detect)</option>
+              <option value="manual">manual</option>
+            </select>
+          </div>
+          <div class="fld"><label>Protocol</label><input id="protocol" type="number" placeholder="auto" style="width:80px" disabled></div>
           <div class="fld"><label>Bots</label><input id="target" type="number" value="120"></div>
           <div class="fld"><label>Batch</label><input id="step" type="number" value="10"></div>
           <div class="fld"><label>Interval ms</label><input id="intervalMs" type="number" value="2000"></div>
@@ -51,6 +57,12 @@
               <option value="voyager">voyager — fast travel, max chunk load</option>
             </select>
           </div>
+          <div class="fld"><label>Chat message</label><input id="chatMessage" placeholder="(off)" style="width:150px"></div>
+          <div class="fld"><label>Command</label><input id="command" placeholder="e.g. spawn" style="width:130px"></div>
+          <div class="fld"><label>Swing</label>
+            <select id="swing" style="width:76px;font-family:var(--fs)"><option value="off" selected>off</option><option value="on">on</option></select>
+          </div>
+          <div class="fld"><label>Actions every s</label><input id="actionSeconds" type="number" value="5"></div>
         </div>
       </div>
 

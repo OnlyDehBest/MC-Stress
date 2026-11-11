@@ -34,6 +34,9 @@ pub struct ProtocolSpec {
     pub play_serverbound_set_position: i32,
     pub teleport_id_leads_position: bool,
     pub client_information_has_particle_status: bool,
+    pub play_serverbound_chat_message: i32,
+    pub play_serverbound_chat_command: i32,
+    pub play_serverbound_swing: i32,
 }
 
 struct ConfigurationIds {
@@ -96,6 +99,9 @@ const fn describe(
         play_serverbound_set_position,
         teleport_id_leads_position,
         client_information_has_particle_status,
+        play_serverbound_chat_message: 0x06,
+        play_serverbound_chat_command: 0x04,
+        play_serverbound_swing: 0x36,
     }
 }
 

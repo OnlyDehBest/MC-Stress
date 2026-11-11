@@ -118,18 +118,31 @@ function readConfig() {
   const config = {
     host: $('host').value.trim(),
     port: Number($('port').value),
-    prefix: $('prefix').value.trim(),
+    nickname: $('nickname').value.trim(),
     target: Number($('target').value),
     step: Number($('step').value),
     intervalMs: Number($('intervalMs').value),
     viewDistance: Number($('viewDistance').value),
     spreadSeconds: Number($('spreadSeconds').value),
     mode: $('mode').value,
+    actionIntervalMs: Math.max(500, (Number($('actionSeconds').value) || 5) * 1000),
   };
-  const protocol = $('protocol').value.trim();
-  if (protocol) config.protocol = Number(protocol);
+  if ($('protocolMode').value === 'manual') {
+    const protocol = $('protocol').value.trim();
+    if (protocol) config.protocol = Number(protocol);
+  }
+  const chat = $('chatMessage').value.trim();
+  if (chat) config.chatMessage = chat;
+  const command = $('command').value.trim();
+  if (command) config.command = command;
+  if ($('swing').value === 'on') config.swing = true;
   return config;
 }
+
+$('protocolMode').onchange = () => {
+  $('protocol').disabled = $('protocolMode').value !== 'manual';
+  if ($('protocol').disabled) $('protocol').value = '';
+};
 
 $('start').onclick = async () => {
   history.bots.length = 0; history.lat.length = 0; breakingPoint = null;

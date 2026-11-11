@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rand::Rng;
 use tokio::net::TcpStream;
@@ -20,6 +20,10 @@ pub struct BotConfig {
     pub view_distance: i8,
     pub spread_seconds: f64,
     pub model: BotModel,
+    pub chat_message: Option<String>,
+    pub command: Option<String>,
+    pub swing: bool,
+    pub action_interval: Duration,
 }
 
 enum Tracked {
@@ -136,12 +140,63 @@ async fn join_and_hold(
 
     let position: Arc<Mutex<Option<(f64, f64, f64)>>> = Arc::new(Mutex::new(None));
     let movement_task = tokio::spawn(follow_model(config.clone(), swarm.clone(), outgoing.clone(), position.clone()));
+
+    let has_activity = config.chat_message.is_some() || config.command.is_some() || config.swing;
+    let activity_task = if has_activity {
+        Some(tokio::spawn(run_activity(config.clone(), outgoing.clone())))
+    } else {
+        None
+    };
+
     let outcome = hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position).await;
 
     movement_task.abort();
+    if let Some(activity) = activity_task {
+        activity.abort();
+    }
     drop(outgoing);
     writer_task.abort();
     outcome
+}
+
+async fn run_activity(config: BotConfig, outgoing: mpsc::Sender<(i32, Vec<u8>)>) {
+    let spec = config.spec;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let mut tick = interval(config.action_interval.max(Duration::from_millis(500)));
+    loop {
+        tick.tick().await;
+        if config.swing {
+            let mut body = Vec::new();
+            protocol::write_varint(&mut body, 0);
+            if outgoing.send((spec.play_serverbound_swing, body)).await.is_err() {
+                return;
+            }
+        }
+        if let Some(command) = &config.command {
+            let mut body = Vec::new();
+            protocol::write_string(&mut body, command);
+            if outgoing.send((spec.play_serverbound_chat_command, body)).await.is_err() {
+                return;
+            }
+        }
+        if let Some(message) = &config.chat_message {
+            if outgoing.send((spec.play_serverbound_chat_message, chat_message_body(message))).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+fn chat_message_body(message: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    protocol::write_string(&mut body, message);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+    protocol::write_i64(&mut body, now);
+    protocol::write_i64(&mut body, 0);
+    protocol::write_bool(&mut body, false);
+    protocol::write_varint(&mut body, 0);
+    body.extend_from_slice(&[0, 0, 0]);
+    body
 }
 
 async fn hold_in_play(
