@@ -43,14 +43,23 @@ cd MC-Stress
 cargo run --release
 ```
 
-The dashboard opens in your browser at **http://localhost:3000**. Set the target server and press **Start**. Stop MC-Stress with `Ctrl+C`.
+On a desktop, the dashboard opens in your browser at **http://localhost:3000**. On a headless server (such as a VPS) there is no browser to open, so MC-Stress prints clickable links instead, including one with the machine's IP address that you can open from your PC:
 
-To use a different port, or to skip opening the browser (for example on a headless machine):
+```
+  MC-Stress running on http://localhost:3000
+  Open from your PC:   http://203.0.113.10:3000
+```
+
+Set the target server and press **Start**. Stop MC-Stress with `Ctrl+C`.
+
+To use a different port, or to never open the browser:
 
 ```bash
 PORT=8080 cargo run --release
 NO_BROWSER=1 cargo run --release
 ```
+
+> The dashboard has no authentication. On a public server, use an SSH tunnel (`ssh -L 3000:localhost:3000 user@server`) or allow port 3000 only from your IP.
 
 ### Server requirements
 
