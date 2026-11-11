@@ -1,4 +1,5 @@
 mod bot;
+mod browser;
 mod model;
 mod protocol;
 mod slp;
@@ -44,7 +45,9 @@ async fn main() {
     let port: u16 = std::env::var("PORT").ok().and_then(|value| value.parse().ok()).unwrap_or(3000);
     let address = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(address).await.expect("bind");
-    println!("\n  MC-Stress running on http://localhost:{port}\n");
+    let url = format!("http://localhost:{port}");
+    println!("\n  MC-Stress running on {url}\n");
+    browser::open(&url);
     axum::serve(listener, app).await.expect("serve");
 }
 

@@ -43,12 +43,13 @@ cd MC-Stress
 cargo run --release
 ```
 
-Open **http://localhost:3000**, set the target server and press **Start**.
+The dashboard opens in your browser at **http://localhost:3000**. Set the target server and press **Start**. Stop MC-Stress with `Ctrl+C`.
 
-To use a different port:
+To use a different port, or to skip opening the browser (for example on a headless machine):
 
 ```bash
 PORT=8080 cargo run --release
+NO_BROWSER=1 cargo run --release
 ```
 
 ### Server requirements
