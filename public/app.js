@@ -34,7 +34,7 @@ function renderStats(s) {
 
   const live = !!s.running;
   $('status').className = 'status' + (live ? ' live' : '');
-  $('statusTxt').textContent = live ? 'in esecuzione' : 'fermo';
+  $('statusTxt').textContent = live ? 'running' : 'idle';
   $('start').disabled = live;
   $('stop').disabled = !live;
   $('clock').textContent = stamp();
@@ -135,7 +135,7 @@ $('start').onclick = async () => {
   history.bots.length = 0; history.lat.length = 0; breakingPoint = null;
   const response = await fetch('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(readConfig()) });
   const data = await response.json();
-  if (!data.ok) appendLog(`<span class="t">${stamp()}</span>  <span style="color:var(--crit)">ERRORE:</span> ${data.error}`);
+  if (!data.ok) appendLog(`<span class="t">${stamp()}</span>  <span style="color:var(--crit)">ERROR:</span> ${data.error}`);
 };
 
 $('stop').onclick = () => fetch('/api/stop', { method: 'POST' });

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,16 +14,16 @@
       <div class="crumb"><span>MC-Stress</span><span class="sep">›</span><b>Load console</b></div>
       <span class="chip" id="engine">raw · multi-proto</span>
       <span class="spacer"></span>
-      <span id="status" class="status"><span class="d"></span><span id="statusTxt">fermo</span></span>
+      <span id="status" class="status"><span class="d"></span><span id="statusTxt">idle</span></span>
     </div>
 
     <div class="head">
       <div>
-        <h1>Console di carico</h1>
-        <p class="sub">Client Minecraft raw (offline-mode) · view distance, dispersione e breaking point.</p>
+        <h1>Load console</h1>
+        <p class="sub">Raw Minecraft clients (offline-mode) · view distance, dispersion and breaking point.</p>
       </div>
       <div class="actions">
-        <button id="start" class="btn pri"><svg class="ico fill" viewBox="0 0 16 16"><path d="M4 3l9 5-9 5z"/></svg>Avvia</button>
+        <button id="start" class="btn pri"><svg class="ico fill" viewBox="0 0 16 16"><path d="M4 3l9 5-9 5z"/></svg>Start</button>
         <button id="stop" class="btn sec" disabled><svg class="ico fill" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>Stop</button>
       </div>
     </div>
@@ -32,50 +32,53 @@
       <div class="panel">
         <div class="bar">
           <div class="fld"><label>Host</label><input id="host" value="localhost" style="width:120px"></div>
-          <div class="fld"><label>Porta</label><input id="port" type="number" value="25565" style="width:78px"></div>
-          <div class="fld"><label>Protocollo</label><input id="protocol" type="number" placeholder="auto" style="width:80px"></div>
-          <div class="fld"><label>Prefisso</label><input id="prefix" value="Bot" style="width:84px"></div>
-          <div class="fld"><label>Bot</label><input id="target" type="number" value="120"></div>
-          <div class="fld"><label>Scaglione</label><input id="step" type="number" value="10"></div>
-          <div class="fld"><label>Intervallo ms</label><input id="intervalMs" type="number" value="2000"></div>
+          <div class="fld"><label>Port</label><input id="port" type="number" value="25565" style="width:78px"></div>
+          <div class="fld"><label>Protocol</label><input id="protocol" type="number" placeholder="auto" style="width:80px"></div>
+          <div class="fld"><label>Prefix</label><input id="prefix" value="Bot" style="width:84px"></div>
+          <div class="fld"><label>Bots</label><input id="target" type="number" value="120"></div>
+          <div class="fld"><label>Batch</label><input id="step" type="number" value="10"></div>
+          <div class="fld"><label>Interval ms</label><input id="intervalMs" type="number" value="2000"></div>
           <div class="fld"><label>View distance</label><input id="viewDistance" type="number" value="8"></div>
-          <div class="fld"><label>Dispersione s</label><input id="spreadSeconds" type="number" value="6"></div>
-          <div class="fld wide"><label>Modalità</label>
+          <div class="fld"><label>Spread s</label><input id="spreadSeconds" type="number" value="6"></div>
+          <div class="fld wide"><label>Bot model</label>
             <select id="mode">
-              <option value="lite">lite — realistico, efficiente</option>
-              <option value="active">active — player che gira</option>
+              <option value="idle">idle — connect only, hold at spawn</option>
+              <option value="sentry" selected>sentry — disperse then hold (light)</option>
+              <option value="wanderer">wanderer — disperse then gentle wander</option>
+              <option value="runner">runner — constant roaming, streams chunks</option>
+              <option value="voyager">voyager — fast travel, max chunk load</option>
             </select>
           </div>
         </div>
       </div>
 
       <div class="kpis">
-        <div class="kpi"><div class="sl">Bot online</div><div id="k-bots" class="sv">0<small> / 0</small></div></div>
-        <div class="kpi"><div class="sl">In movimento</div><div id="k-moving" class="sv">0</div></div>
+        <div class="kpi"><div class="sl">Bots online</div><div id="k-bots" class="sv">0<small> / 0</small></div></div>
+        <div class="kpi"><div class="sl">Moving</div><div id="k-moving" class="sv">0</div></div>
         <div class="kpi"><div class="sl">Breaking point</div><div id="k-bp" class="sv">—</div></div>
-        <div class="kpi"><div class="sl">Latenza server</div><div id="k-lat" class="sv">—<small> ms</small></div></div>
-        <div class="kpi"><div class="sl">Online sul server</div><div id="k-online" class="sv">—</div></div>
-        <div class="kpi"><div class="sl">Errori / kick</div><div id="k-err" class="sv">0</div></div>
+        <div class="kpi"><div class="sl">Server latency</div><div id="k-lat" class="sv">—<small> ms</small></div></div>
+        <div class="kpi"><div class="sl">Online on server</div><div id="k-online" class="sv">—</div></div>
+        <div class="kpi"><div class="sl">Errors / kicks</div><div id="k-err" class="sv">0</div></div>
       </div>
 
       <div class="panel">
         <div class="ph">
-          <h2><svg class="ico" viewBox="0 0 24 24"><path d="M3 17l5-6 4 4 5-7 4 5"/></svg>Carico nel tempo</h2>
-          <span class="legend"><span><i style="background:var(--acc)"></i>bot</span><span><i style="background:var(--high)"></i>latenza ms</span></span>
+          <h2><svg class="ico" viewBox="0 0 24 24"><path d="M3 17l5-6 4 4 5-7 4 5"/></svg>Load over time</h2>
+          <span class="legend"><span><i style="background:var(--acc)"></i>bots</span><span><i style="background:var(--high)"></i>latency ms</span></span>
           <span class="rt" id="clock">—</span>
         </div>
         <div class="chartpad">
-          <div class="chartbox"><svg id="chart" viewBox="0 0 800 240" preserveAspectRatio="none" role="img" aria-label="Carico nel tempo"></svg></div>
+          <div class="chartbox"><svg id="chart" viewBox="0 0 800 240" preserveAspectRatio="none" role="img" aria-label="Load over time"></svg></div>
         </div>
       </div>
 
       <div class="panel">
         <div class="ph"><h2><svg class="ico" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Log</h2></div>
-        <pre id="log"><span class="t">In attesa.</span> Imposta i parametri e premi Avvia.</pre>
+        <pre id="log"><span class="t">Idle.</span> Set the parameters and press Start.</pre>
       </div>
     </div>
 
-    <p class="foot">Server in <code>online-mode=false</code>. I bot si muovono su <code>y</code> costante: disattiva l'anti-cheat del movimento durante il test. Il breaking point è un proxy (latenza/kick): per il TPS reale affianca <code>/spark tps</code>.</p>
+    <p class="foot">Server must be in <code>online-mode=false</code>. Bots move on a constant <code>y</code>: disable movement anti-cheat during the test. The breaking point is a proxy (latency / kicks); for real TPS run <code>/spark tps</code> alongside.</p>
   </div>
   <script src="/app.js"></script>
 </body>

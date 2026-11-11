@@ -7,6 +7,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio::task::JoinSet;
 
 use crate::bot::{run_bot, BotConfig};
+use crate::model::BotModel;
 use crate::{slp, versions};
 
 #[derive(Deserialize)]
@@ -101,7 +102,7 @@ impl BotSwarm {
 
     pub async fn start(self: &Arc<Self>, request: StartRequest) -> Result<(), String> {
         if self.running.swap(true, Ordering::SeqCst) {
-            return Err("Test gia' in corso. Premi Stop prima di riavviare.".into());
+            return Err("A test is already running. Press Stop before starting again.".into());
         }
 
         let view_distance = request.view_distance.clamp(2, 16);
@@ -123,13 +124,14 @@ impl BotSwarm {
             }
         };
 
+        let model = BotModel::parse(&request.mode);
         let config = BotConfig {
             host: request.host.clone(),
             port: request.port,
             spec,
             view_distance,
             spread_seconds: request.spread_seconds.max(0.0),
-            active: request.mode == "active",
+            model,
         };
 
         self.connected.store(0, Ordering::Relaxed);
@@ -146,13 +148,13 @@ impl BotSwarm {
         };
 
         self.log(format!(
-            "Avvio: {target} bot su {}:{} · {} (proto {}) · scaglioni {step}/{interval_ms}ms · view {view_distance} chunk · dispersione {}s · {}",
+            "Start: {target} bots on {}:{} · {} (proto {}) · batches {step}/{interval_ms}ms · view {view_distance} chunks · spread {}s · model {}",
             config.host,
             config.port,
             spec.name,
             spec.protocol,
             config.spread_seconds,
-            if config.active { "active" } else { "lite" }
+            model.label()
         ));
 
         let swarm = self.clone();
@@ -160,7 +162,7 @@ impl BotSwarm {
             while swarm.running.load(Ordering::SeqCst) {
                 let dispatched = swarm.dispatched.load(Ordering::Relaxed);
                 if dispatched >= target {
-                    swarm.log(format!("Ramp completato: {target} bot avviati."));
+                    swarm.log(format!("Ramp complete: {target} bots dispatched."));
                     break;
                 }
                 let batch = step.min(target - dispatched);
@@ -180,13 +182,13 @@ impl BotSwarm {
     async fn resolve_spec(&self, request: &StartRequest) -> Result<&'static versions::ProtocolSpec, String> {
         if let Some(protocol) = request.protocol {
             return versions::spec_for(protocol)
-                .ok_or_else(|| format!("Protocollo {protocol} non supportato. Supportati: {}", supported_list()));
+                .ok_or_else(|| format!("Protocol {protocol} is not supported. Supported: {}", supported_list()));
         }
         match slp::ping(&request.host, request.port, versions::DEFAULT_PROTOCOL).await {
             Ok(status) => match status.protocol.and_then(versions::spec_for) {
                 Some(spec) => {
                     self.log(format!(
-                        "Versione rilevata: {} (protocollo {}).",
+                        "Detected version: {} (protocol {}).",
                         status.version_name.as_deref().unwrap_or("?"),
                         spec.protocol
                     ));
@@ -195,7 +197,7 @@ impl BotSwarm {
                 None => {
                     let spec = versions::spec_for(versions::DEFAULT_PROTOCOL).unwrap();
                     self.log(format!(
-                        "Versione non riconosciuta ({:?} / proto {:?}): uso {} di default. Forza il protocollo o aggiorna src/versions.rs.",
+                        "Unrecognised version ({:?} / proto {:?}): falling back to {}. Force the protocol or update src/versions.rs.",
                         status.version_name, status.protocol, spec.name
                     ));
                     Ok(spec)
@@ -203,7 +205,7 @@ impl BotSwarm {
             },
             Err(reason) => {
                 let spec = versions::spec_for(versions::DEFAULT_PROTOCOL).unwrap();
-                self.log(format!("SLP non riuscita ({reason}): uso {} di default.", spec.name));
+                self.log(format!("Server List Ping failed ({reason}): falling back to {}.", spec.name));
                 Ok(spec)
             }
         }
@@ -221,7 +223,7 @@ impl BotSwarm {
         self.moving.store(0, Ordering::Relaxed);
         self.dispatched.store(0, Ordering::Relaxed);
         self.target.store(0, Ordering::Relaxed);
-        self.log(format!("Stop: disconnessi ~{released} bot."));
+        self.log(format!("Stop: ~{released} bots disconnected."));
     }
 
     pub async fn observe(&self, latency: Option<u64>) {
@@ -237,14 +239,14 @@ impl BotSwarm {
                     None => state.baseline_latency = Some(latency),
                     Some(baseline) if latency > baseline * 2 + 60 => {
                         state.at_bots = Some(connected);
-                        self.log(format!("Breaking point ~{connected} bot: latenza server {latency}ms (baseline {baseline}ms)."));
+                        self.log(format!("Breaking point ~{connected} bots: server latency {latency}ms (baseline {baseline}ms)."));
                     }
                     _ => {}
                 }
             }
             if state.at_bots.is_none() && errors > state.previous_errors && state.previous_errors == 0 {
                 state.at_bots = Some(connected);
-                self.log(format!("Breaking point ~{connected} bot: il server inizia a espellere."));
+                self.log(format!("Breaking point ~{connected} bots: the server started kicking."));
             }
         }
         state.previous_errors = errors;

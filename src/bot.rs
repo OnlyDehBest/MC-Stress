@@ -7,6 +7,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Instant};
 
+use crate::model::{BotModel, WALK_BLOCKS_PER_SECOND};
 use crate::swarm::BotSwarm;
 use crate::protocol::{self, PayloadReader};
 use crate::versions::{self, ProtocolSpec};
@@ -18,10 +19,8 @@ pub struct BotConfig {
     pub spec: &'static ProtocolSpec,
     pub view_distance: i8,
     pub spread_seconds: f64,
-    pub active: bool,
+    pub model: BotModel,
 }
-
-const WALK_SPEED_BLOCKS_PER_SECOND: f64 = 4.3;
 
 enum Tracked {
     Connected,
@@ -101,7 +100,7 @@ async fn join_and_hold(
         } else if packet_id == versions::CB_LOGIN_DISCONNECT {
             return Err(failure("login disconnect"));
         } else if packet_id == versions::CB_LOGIN_ENCRYPTION_REQUEST {
-            return Err(failure("server in online-mode: serve offline-mode"));
+            return Err(failure("server is in online-mode: offline-mode is required"));
         }
     }
 
@@ -136,7 +135,7 @@ async fn join_and_hold(
     });
 
     let position: Arc<Mutex<Option<(f64, f64, f64)>>> = Arc::new(Mutex::new(None));
-    let movement_task = tokio::spawn(wander(config.clone(), swarm.clone(), outgoing.clone(), position.clone()));
+    let movement_task = tokio::spawn(follow_model(config.clone(), swarm.clone(), outgoing.clone(), position.clone()));
     let outcome = hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position).await;
 
     movement_task.abort();
@@ -187,7 +186,7 @@ async fn hold_in_play(
     }
 }
 
-async fn wander(
+async fn follow_model(
     config: BotConfig,
     swarm: Arc<BotSwarm>,
     outgoing: mpsc::Sender<(i32, Vec<u8>)>,
@@ -201,50 +200,65 @@ async fn wander(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    if !(config.spread_seconds > 0.0 || config.active) {
-        return;
-    }
-
-    let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
+    let profile = config.model.profile();
     let heading: f64 = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
-    let velocity_x = -heading.sin() * WALK_SPEED_BLOCKS_PER_SECOND / 10.0;
-    let velocity_z = heading.cos() * WALK_SPEED_BLOCKS_PER_SECOND / 10.0;
-    let jitter = rand::thread_rng().gen_range(0.6..1.4);
-    let disperse_until = Instant::now() + Duration::from_secs_f64(config.spread_seconds.max(0.5) * jitter);
 
-    let mut tick = interval(Duration::from_millis(100));
-    loop {
-        tick.tick().await;
-        if Instant::now() >= disperse_until {
-            break;
-        }
-        let mut current = position.lock().await;
-        if let Some((x, y, z)) = current.as_mut() {
-            *x += velocity_x;
-            *z += velocity_z;
-            if outgoing.send((spec.play_serverbound_set_position, set_position_body(*x, *y, *z, spec.teleport_id_leads_position))).await.is_err() {
+    if profile.disperse && config.spread_seconds > 0.0 {
+        let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
+        let step_x = -heading.sin() * WALK_BLOCKS_PER_SECOND / 10.0;
+        let step_z = heading.cos() * WALK_BLOCKS_PER_SECOND / 10.0;
+        let jitter = rand::thread_rng().gen_range(0.6..1.4);
+        let disperse_until = Instant::now() + Duration::from_secs_f64(config.spread_seconds.max(0.5) * jitter);
+        let mut tick = interval(Duration::from_millis(100));
+        loop {
+            tick.tick().await;
+            if Instant::now() >= disperse_until {
+                break;
+            }
+            if advance(&position, &outgoing, spec, step_x, step_z).await.is_err() {
                 return;
             }
         }
     }
-    drop(_moving);
 
-    if config.active {
-        let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
-        let mut tick = interval(Duration::from_secs(1));
-        loop {
-            tick.tick().await;
-            let angle: f64 = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
-            let mut current = position.lock().await;
-            if let Some((x, y, z)) = current.as_mut() {
-                *x += angle.cos() * 0.6;
-                *z += angle.sin() * 0.6;
-                if outgoing.send((spec.play_serverbound_set_position, set_position_body(*x, *y, *z, spec.teleport_id_leads_position))).await.is_err() {
-                    return;
-                }
-            }
+    let continuous = match profile.continuous {
+        Some(continuous) => continuous,
+        None => return,
+    };
+
+    let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
+    let mut travel_heading = heading;
+    let mut tick = interval(continuous.tick);
+    loop {
+        tick.tick().await;
+        if !continuous.keep_heading {
+            travel_heading = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
+        }
+        let step_x = -travel_heading.sin() * continuous.blocks_per_tick;
+        let step_z = travel_heading.cos() * continuous.blocks_per_tick;
+        if advance(&position, &outgoing, spec, step_x, step_z).await.is_err() {
+            return;
         }
     }
+}
+
+async fn advance(
+    position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
+    outgoing: &mpsc::Sender<(i32, Vec<u8>)>,
+    spec: &'static ProtocolSpec,
+    step_x: f64,
+    step_z: f64,
+) -> Result<(), ()> {
+    let mut current = position.lock().await;
+    if let Some((x, y, z)) = current.as_mut() {
+        *x += step_x;
+        *z += step_z;
+        let body = set_position_body(*x, *y, *z, spec.teleport_id_leads_position);
+        if outgoing.send((spec.play_serverbound_set_position, body)).await.is_err() {
+            return Err(());
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn set_position_body(x: f64, y: f64, z: f64, modern_flags: bool) -> Vec<u8> {

@@ -1,4 +1,5 @@
 mod bot;
+mod model;
 mod protocol;
 mod slp;
 mod swarm;
@@ -43,7 +44,7 @@ async fn main() {
     let port: u16 = std::env::var("PORT").ok().and_then(|value| value.parse().ok()).unwrap_or(3000);
     let address = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(address).await.expect("bind");
-    println!("\n  MC-Stress attivo su http://localhost:{port}\n");
+    println!("\n  MC-Stress running on http://localhost:{port}\n");
     axum::serve(listener, app).await.expect("serve");
 }
 
