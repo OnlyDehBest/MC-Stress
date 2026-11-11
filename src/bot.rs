@@ -208,7 +208,8 @@ async fn follow_model(
         let step_x = -heading.sin() * WALK_BLOCKS_PER_SECOND / 10.0;
         let step_z = heading.cos() * WALK_BLOCKS_PER_SECOND / 10.0;
         let jitter = rand::thread_rng().gen_range(0.6..1.4);
-        let disperse_until = Instant::now() + Duration::from_secs_f64(config.spread_seconds.max(0.5) * jitter);
+        let seconds = config.spread_seconds.max(0.5) * jitter * profile.disperse_scale;
+        let disperse_until = Instant::now() + Duration::from_secs_f64(seconds);
         let mut tick = interval(Duration::from_millis(100));
         loop {
             tick.tick().await;
@@ -228,14 +229,21 @@ async fn follow_model(
 
     let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
     let mut travel_heading = heading;
+    let mut swing = 1.0;
     let mut tick = interval(continuous.tick);
     loop {
         tick.tick().await;
         if !continuous.keep_heading {
             travel_heading = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
         }
-        let step_x = -travel_heading.sin() * continuous.blocks_per_tick;
-        let step_z = travel_heading.cos() * continuous.blocks_per_tick;
+        let direction = if continuous.oscillate_in_place {
+            swing = -swing;
+            swing
+        } else {
+            1.0
+        };
+        let step_x = -travel_heading.sin() * continuous.blocks_per_tick * direction;
+        let step_z = travel_heading.cos() * continuous.blocks_per_tick * direction;
         if advance(&position, &outgoing, spec, step_x, step_z).await.is_err() {
             return;
         }
