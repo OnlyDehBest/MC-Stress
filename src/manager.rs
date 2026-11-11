@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio::task::JoinSet;
 
 use crate::bot::{run_bot, BotConfig};
-use crate::ids;
+use crate::{ids, slp};
 
 /// Richiesta di avvio dalla dashboard (POST /api/start).
 #[derive(Deserialize)]
@@ -60,6 +60,7 @@ pub struct Manager {
     spawned: AtomicUsize,
     target: AtomicUsize,
     last_cfg: Mutex<Option<(String, u16, i32)>>, // host, port, protocol (per la SLP)
+    version: Mutex<Option<String>>,              // versione rilevata/usata (per la dashboard)
     brk: Mutex<BreakState>,
     tasks: Mutex<JoinSet<()>>,
     tx: broadcast::Sender<String>,
@@ -76,6 +77,7 @@ impl Manager {
             spawned: AtomicUsize::new(0),
             target: AtomicUsize::new(0),
             last_cfg: Mutex::new(None),
+            version: Mutex::new(None),
             brk: Mutex::new(BreakState { base_latency: None, breaking_point: None, prev_err: 0 }),
             tasks: Mutex::new(JoinSet::new()),
             tx,
@@ -101,17 +103,51 @@ impl Manager {
         if self.running.swap(true, Ordering::SeqCst) {
             return Err("Test gia' in corso. Premi Stop prima di riavviare.".into());
         }
-        let protocol = req.protocol.unwrap_or(ids::PROTOCOL_VERSION);
         let view_distance = req.view_distance.clamp(2, 16);
         let target = req.target.max(1);
         let step = req.step.max(1);
         let interval_ms = req.interval_ms.max(250);
         let prefix: String = req.prefix.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
 
+        // Scelta dello spec: protocollo forzato, oppure rilevamento via SLP.
+        let spec: &'static ids::Spec = match req.protocol {
+            Some(p) => match ids::spec_for(p) {
+                Some(s) => s,
+                None => {
+                    self.running.store(false, Ordering::SeqCst);
+                    return Err(format!("Protocollo {p} non supportato. Supportati: {}", supported_list()));
+                }
+            },
+            None => match slp::ping(&req.host, req.port, ids::DEFAULT_PROTOCOL).await {
+                Ok(st) => match st.protocol.and_then(ids::spec_for) {
+                    Some(s) => {
+                        self.log(format!(
+                            "Versione rilevata: {} (protocollo {}).",
+                            st.version_name.as_deref().unwrap_or("?"), s.protocol
+                        ));
+                        s
+                    }
+                    None => {
+                        let s = ids::spec_for(ids::DEFAULT_PROTOCOL).unwrap();
+                        self.log(format!(
+                            "Versione del server non tra quelle note ({:?} / proto {:?}): uso {} di default. Forza il protocollo o aggiorna src/ids.rs.",
+                            st.version_name, st.protocol, s.name
+                        ));
+                        s
+                    }
+                },
+                Err(e) => {
+                    let s = ids::spec_for(ids::DEFAULT_PROTOCOL).unwrap();
+                    self.log(format!("SLP non riuscita ({e}): uso {} di default.", s.name));
+                    s
+                }
+            },
+        };
+
         let cfg = BotConfig {
             host: req.host.clone(),
             port: req.port,
-            protocol,
+            spec,
             view_distance,
             spread_secs: req.spread_seconds.max(0.0),
             active: req.mode == "active",
@@ -122,12 +158,13 @@ impl Manager {
         self.errors.store(0, Ordering::Relaxed);
         self.spawned.store(0, Ordering::Relaxed);
         self.target.store(target, Ordering::Relaxed);
-        *self.last_cfg.lock().await = Some((req.host.clone(), req.port, protocol));
+        *self.last_cfg.lock().await = Some((req.host.clone(), req.port, spec.protocol));
+        *self.version.lock().await = Some(format!("{} ({})", spec.name, spec.protocol));
         *self.brk.lock().await = BreakState { base_latency: None, breaking_point: None, prev_err: 0 };
 
         self.log(format!(
-            "Avvio: {target} bot su {}:{} · protocollo {} ({}) · scaglioni {step}/{interval_ms}ms · view {view_distance} chunk · dispersione {}s · {}",
-            cfg.host, cfg.port, protocol, ids::VERSION_NAME, cfg.spread_secs, if cfg.active { "active" } else { "lite" }
+            "Avvio: {target} bot su {}:{} · {} (proto {}) · scaglioni {step}/{interval_ms}ms · view {view_distance} chunk · dispersione {}s · {}",
+            cfg.host, cfg.port, spec.name, spec.protocol, cfg.spread_secs, if cfg.active { "active" } else { "lite" }
         ));
 
         let mgr = self.clone();
@@ -200,6 +237,7 @@ impl Manager {
 
     pub async fn stats_json(&self, latency: Option<u64>, online: Option<i64>, max: Option<i64>) -> String {
         let brk = self.brk.lock().await;
+        let version = self.version.lock().await.clone();
         serde_json::json!({
             "type": "stats",
             "stats": {
@@ -209,6 +247,7 @@ impl Manager {
                 "errors": self.errors.load(Ordering::Relaxed),
                 "breakingPoint": brk.breaking_point,
                 "running": self.running.load(Ordering::SeqCst),
+                "version": version,
                 "server": latency.map(|l| serde_json::json!({ "latency": l, "online": online, "max": max })),
             }
         })
@@ -218,6 +257,14 @@ impl Manager {
     pub async fn last_cfg(&self) -> Option<(String, u16, i32)> {
         self.last_cfg.lock().await.clone()
     }
+}
+
+fn supported_list() -> String {
+    ids::supported()
+        .iter()
+        .map(|(p, n)| format!("{n} ({p})"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn now_hms() -> String {

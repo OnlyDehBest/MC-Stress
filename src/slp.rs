@@ -13,6 +13,8 @@ pub struct Status {
     pub latency_ms: u64,
     pub online: Option<i64>,
     pub max: Option<i64>,
+    pub protocol: Option<i32>,
+    pub version_name: Option<String>,
 }
 
 pub async fn ping(host: &str, port: u16, protocol: i32) -> std::io::Result<Status> {
@@ -37,7 +39,7 @@ pub async fn ping(host: &str, port: u16, protocol: i32) -> std::io::Result<Statu
     let mut r = Reader::new(&data);
     let len = r.varint()? as usize;
     let json = String::from_utf8_lossy(r.take(len)?).to_string();
-    let (online, max) = parse_players(&json);
+    let (online, max, protocol, version_name) = parse_status(&json);
 
     // Ping -> Pong per misurare la latenza
     let now = Instant::now();
@@ -47,17 +49,19 @@ pub async fn ping(host: &str, port: u16, protocol: i32) -> std::io::Result<Statu
     let _ = proto::read_packet(&mut rd, threshold).await?;
     let latency_ms = now.elapsed().as_millis() as u64;
 
-    Ok(Status { latency_ms, online, max })
+    Ok(Status { latency_ms, online, max, protocol, version_name })
 }
 
-fn parse_players(json: &str) -> (Option<i64>, Option<i64>) {
+fn parse_status(json: &str) -> (Option<i64>, Option<i64>, Option<i32>, Option<String>) {
     let v: serde_json::Value = match serde_json::from_str(json) {
         Ok(v) => v,
-        Err(_) => return (None, None),
+        Err(_) => return (None, None, None, None),
     };
     let online = v.pointer("/players/online").and_then(|x| x.as_i64());
     let max = v.pointer("/players/max").and_then(|x| x.as_i64());
-    (online, max)
+    let protocol = v.pointer("/version/protocol").and_then(|x| x.as_i64()).map(|p| p as i32);
+    let version_name = v.pointer("/version/name").and_then(|x| x.as_str()).map(|s| s.to_string());
+    (online, max, protocol, version_name)
 }
 
 fn err(msg: &str) -> std::io::Error {

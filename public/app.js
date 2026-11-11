@@ -30,6 +30,7 @@ function renderStats(s) {
   $('k-online').textContent = srv && srv.online != null ? srv.online : '—';
   $('k-err').textContent = s.errors ?? 0;
 
+  if (s.version) $('engine').textContent = 'raw · ' + s.version;
   const live = !!s.running;
   $('status').className = 'status' + (live ? ' live' : '');
   $('statusTxt').textContent = live ? 'in esecuzione' : 'fermo';
