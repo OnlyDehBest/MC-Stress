@@ -29,6 +29,11 @@ function renderStats(s) {
   const server = s.server;
   $('k-lat').innerHTML = server && server.latency != null ? `${server.latency}<small> ms</small>` : '—<small> ms</small>';
   $('k-online').textContent = server && server.online != null ? server.online : '—';
+  const chunks = $('k-chunks');
+  if (chunks) {
+    chunks.textContent = s.chunks ?? 0;
+    chunks.className = 'sv ' + ((s.chunks ?? 0) > 0 ? 'ok' : 'crit');
+  }
   $('k-err').textContent = s.errors ?? 0;
   if (s.version) $('engine').textContent = 'raw · ' + s.version;
 

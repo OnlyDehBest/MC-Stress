@@ -79,6 +79,7 @@ pub struct BotSwarm {
     pub connected: AtomicUsize,
     pub moving: AtomicUsize,
     pub errors: AtomicUsize,
+    pub chunks: AtomicUsize,
     dispatched: AtomicUsize,
     target: AtomicUsize,
     endpoint: Mutex<Option<(String, u16, i32)>>,
@@ -96,6 +97,7 @@ impl BotSwarm {
             connected: AtomicUsize::new(0),
             moving: AtomicUsize::new(0),
             errors: AtomicUsize::new(0),
+            chunks: AtomicUsize::new(0),
             dispatched: AtomicUsize::new(0),
             target: AtomicUsize::new(0),
             endpoint: Mutex::new(None),
@@ -169,6 +171,7 @@ impl BotSwarm {
         };
 
         self.connected.store(0, Ordering::Relaxed);
+        self.chunks.store(0, Ordering::Relaxed);
         self.moving.store(0, Ordering::Relaxed);
         self.errors.store(0, Ordering::Relaxed);
         self.dispatched.store(0, Ordering::Relaxed);
@@ -318,6 +321,7 @@ impl BotSwarm {
                 "target": self.target.load(Ordering::Relaxed),
                 "moving": self.moving.load(Ordering::Relaxed),
                 "errors": self.errors.load(Ordering::Relaxed),
+                "chunks": self.chunks.load(Ordering::Relaxed),
                 "breakingPoint": breaking_point,
                 "running": self.running.load(Ordering::SeqCst),
                 "version": version,

@@ -187,11 +187,10 @@ impl World {
         self.set_block(x, y, z, 1);
     }
 
-    /// Parse a clientbound Chunk Data payload (protocol >= 770 format).
-    pub fn load_chunk(&mut self, body: &[u8]) {
-        if let Err(()) = self.try_load_chunk(body) {
-            // Malformed or unexpected layout: drop it rather than corrupt the map.
-        }
+    /// Parse a clientbound Chunk Data payload (protocol >= 770 format). Returns
+    /// true if the chunk parsed; a malformed/unexpected layout is dropped.
+    pub fn load_chunk(&mut self, body: &[u8]) -> bool {
+        self.try_load_chunk(body).is_ok()
     }
 
     fn try_load_chunk(&mut self, body: &[u8]) -> Result<(), ()> {

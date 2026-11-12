@@ -185,7 +185,7 @@ async fn join_and_hold(
         ));
     }
 
-    hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position, &world, &entities).await
+    hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position, &world, &entities, swarm).await
 }
 
 async fn run_activity(
@@ -347,10 +347,11 @@ async fn hold_in_play(
     position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
     world: &WorldHandle,
     entities: &EntityHandle,
+    swarm: &Arc<BotSwarm>,
 ) -> std::io::Result<()> {
     loop {
         let (packet_id, body) = protocol::read_packet(reader, compression_threshold).await?;
-        if spec.world_supported && apply_world_packet(spec, packet_id, &body, world).await {
+        if spec.world_supported && apply_world_packet(spec, packet_id, &body, world, swarm).await {
             continue;
         }
         if spec.world_supported && apply_entity_packet(spec, packet_id, &body, entities).await {
@@ -394,10 +395,13 @@ async fn apply_world_packet(
     packet_id: i32,
     body: &[u8],
     world: &WorldHandle,
+    swarm: &Arc<BotSwarm>,
 ) -> bool {
     if packet_id == spec.play_clientbound_chunk_data {
         if let Some(w) = world.lock().await.as_mut() {
-            w.load_chunk(body);
+            if w.load_chunk(body) {
+                swarm.chunks.fetch_add(1, Ordering::Relaxed);
+            }
         }
         true
     } else if packet_id == spec.play_clientbound_unload_chunk {
