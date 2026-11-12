@@ -6,6 +6,8 @@ mod protocol;
 mod slp;
 mod swarm;
 mod versions;
+mod world;
+mod world_blocks;
 
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;

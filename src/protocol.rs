@@ -86,6 +86,34 @@ impl<'a> PayloadReader<'a> {
         Ok(f64::from_be_bytes(slice.try_into().unwrap()))
     }
 
+    pub fn read_u8(&mut self) -> io::Result<u8> {
+        let byte = *self
+            .bytes
+            .get(self.position)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "u8 eof"))?;
+        self.position += 1;
+        Ok(byte)
+    }
+
+    pub fn read_i16(&mut self) -> io::Result<i16> {
+        let slice = self.read_bytes(2)?;
+        Ok(i16::from_be_bytes(slice.try_into().unwrap()))
+    }
+
+    pub fn read_i32(&mut self) -> io::Result<i32> {
+        let slice = self.read_bytes(4)?;
+        Ok(i32::from_be_bytes(slice.try_into().unwrap()))
+    }
+
+    pub fn read_i64(&mut self) -> io::Result<i64> {
+        let slice = self.read_bytes(8)?;
+        Ok(i64::from_be_bytes(slice.try_into().unwrap()))
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.position)
+    }
+
     pub fn skip(&mut self, amount: usize) -> io::Result<()> {
         let end = self.position + amount;
         if end > self.bytes.len() {

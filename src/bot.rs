@@ -12,6 +12,9 @@ use crate::model::{BotModel, WALK_BLOCKS_PER_SECOND};
 use crate::swarm::BotSwarm;
 use crate::protocol::{self, PayloadReader};
 use crate::versions::{self, ProtocolSpec};
+use crate::world::World;
+
+type WorldHandle = Arc<Mutex<Option<World>>>;
 
 #[derive(Clone)]
 pub struct BotConfig {
@@ -142,14 +145,25 @@ async fn join_and_hold(
     });
 
     let position: Arc<Mutex<Option<(f64, f64, f64)>>> = Arc::new(Mutex::new(None));
-    tasks.spawn(follow_model(config.clone(), swarm.clone(), outgoing.clone(), position.clone()));
+    let world: WorldHandle = Arc::new(Mutex::new(if spec.world_supported {
+        Some(World::new(spec.protocol))
+    } else {
+        None
+    }));
+    tasks.spawn(follow_model(
+        config.clone(),
+        swarm.clone(),
+        outgoing.clone(),
+        position.clone(),
+        world.clone(),
+    ));
 
     let has_activity = config.chat_message.is_some() || config.command.is_some() || config.swing;
     if has_activity {
         tasks.spawn(run_activity(config.clone(), outgoing.clone()));
     }
 
-    hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position).await
+    hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position, &world).await
 }
 
 async fn run_activity(config: BotConfig, outgoing: mpsc::Sender<(i32, Vec<u8>)>) {
@@ -201,9 +215,13 @@ async fn hold_in_play(
     spec: &'static ProtocolSpec,
     outgoing: &mpsc::Sender<(i32, Vec<u8>)>,
     position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
+    world: &WorldHandle,
 ) -> std::io::Result<()> {
     loop {
         let (packet_id, body) = protocol::read_packet(reader, compression_threshold).await?;
+        if spec.world_supported && apply_world_packet(spec, packet_id, &body, world).await {
+            continue;
+        }
         if packet_id == spec.play_clientbound_keep_alive {
             let _ = outgoing.send((spec.play_serverbound_keep_alive, body)).await;
         } else if packet_id == spec.play_clientbound_synchronize_position {
@@ -237,11 +255,80 @@ async fn hold_in_play(
     }
 }
 
+async fn apply_world_packet(
+    spec: &'static ProtocolSpec,
+    packet_id: i32,
+    body: &[u8],
+    world: &WorldHandle,
+) -> bool {
+    if packet_id == spec.play_clientbound_chunk_data {
+        if let Some(w) = world.lock().await.as_mut() {
+            w.load_chunk(body);
+        }
+        true
+    } else if packet_id == spec.play_clientbound_unload_chunk {
+        let mut reader = PayloadReader::new(body);
+        if let (Ok(cz), Ok(cx)) = (reader.read_i32(), reader.read_i32()) {
+            if let Some(w) = world.lock().await.as_mut() {
+                w.unload(cx, cz);
+            }
+        }
+        true
+    } else if packet_id == spec.play_clientbound_block_change {
+        let mut reader = PayloadReader::new(body);
+        if let (Ok(location), Ok(state)) = (reader.read_i64(), reader.read_varint()) {
+            let (x, y, z) = decode_position(location);
+            if let Some(w) = world.lock().await.as_mut() {
+                w.set_block(x, y, z, state as u32);
+            }
+        }
+        true
+    } else if packet_id == spec.play_clientbound_multi_block_change {
+        apply_multi_block(body, world).await;
+        true
+    } else {
+        false
+    }
+}
+
+async fn apply_multi_block(body: &[u8], world: &WorldHandle) {
+    let mut reader = PayloadReader::new(body);
+    let Ok(packed) = reader.read_i64() else { return };
+    let section_x = (packed >> 42) as i32;
+    let section_z = ((packed << 22) >> 42) as i32;
+    let section_y = ((packed << 44) >> 44) as i32;
+    let Ok(count) = reader.read_varint() else { return };
+    let mut guard = world.lock().await;
+    let Some(w) = guard.as_mut() else { return };
+    for _ in 0..count {
+        let Ok(record) = reader.read_varint() else { return };
+        let record = record as u32;
+        let state = record >> 12;
+        let local_x = ((record >> 8) & 0xF) as i32;
+        let local_z = ((record >> 4) & 0xF) as i32;
+        let local_y = (record & 0xF) as i32;
+        w.set_block(
+            section_x * 16 + local_x,
+            section_y * 16 + local_y,
+            section_z * 16 + local_z,
+            state,
+        );
+    }
+}
+
+fn decode_position(value: i64) -> (i32, i32, i32) {
+    let x = (value >> 38) as i32;
+    let y = ((value << 52) >> 52) as i32;
+    let z = ((value << 26) >> 38) as i32;
+    (x, y, z)
+}
+
 async fn follow_model(
     config: BotConfig,
     swarm: Arc<BotSwarm>,
     outgoing: mpsc::Sender<(i32, Vec<u8>)>,
     position: Arc<Mutex<Option<(f64, f64, f64)>>>,
+    world: WorldHandle,
 ) {
     let spec = config.spec;
     loop {
@@ -267,7 +354,7 @@ async fn follow_model(
             if Instant::now() >= disperse_until {
                 break;
             }
-            if advance(&position, &outgoing, spec, step_x, step_z).await.is_err() {
+            if advance(&position, &outgoing, spec, &world, step_x, step_z).await.is_err() {
                 return;
             }
         }
@@ -295,7 +382,7 @@ async fn follow_model(
         };
         let step_x = -travel_heading.sin() * continuous.blocks_per_tick * direction;
         let step_z = travel_heading.cos() * continuous.blocks_per_tick * direction;
-        if advance(&position, &outgoing, spec, step_x, step_z).await.is_err() {
+        if advance(&position, &outgoing, spec, &world, step_x, step_z).await.is_err() {
             return;
         }
     }
@@ -305,17 +392,47 @@ async fn advance(
     position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
     outgoing: &mpsc::Sender<(i32, Vec<u8>)>,
     spec: &'static ProtocolSpec,
+    world: &WorldHandle,
     step_x: f64,
     step_z: f64,
 ) -> Result<(), ()> {
     let mut current = position.lock().await;
-    if let Some((x, y, z)) = current.as_mut() {
-        *x += step_x;
-        *z += step_z;
-        let body = set_position_body(*x, *y, *z, spec.teleport_id_leads_position);
-        if outgoing.send((spec.play_serverbound_set_position, body)).await.is_err() {
-            return Err(());
+    let Some((x, y, z)) = current.as_mut() else {
+        return Ok(());
+    };
+    let next_x = *x + step_x;
+    let next_z = *z + step_z;
+    let mut next_y = *y;
+
+    // World-aware step: follow the real ground, step up a single block, fall into
+    // drops, and refuse to walk into a wall or a ceiling. Falls back to a flat
+    // slide when the destination chunk is not loaded yet.
+    {
+        let guard = world.lock().await;
+        if let Some(w) = guard.as_ref() {
+            let bx = next_x.floor() as i32;
+            let bz = next_z.floor() as i32;
+            let feet = y.floor() as i32;
+            if w.is_loaded(bx, bz) {
+                match w.surface_y(bx, feet + 1, bz) {
+                    Some(surface) if surface - feet <= 1 && w.passable_column(bx, surface, bz) => {
+                        next_y = surface as f64;
+                    }
+                    _ => {
+                        // Blocked by a wall, a low ceiling, or a void: hold position.
+                        return Ok(());
+                    }
+                }
+            }
         }
+    }
+
+    *x = next_x;
+    *z = next_z;
+    *y = next_y;
+    let body = set_position_body(*x, *y, *z, spec.teleport_id_leads_position);
+    if outgoing.send((spec.play_serverbound_set_position, body)).await.is_err() {
+        return Err(());
     }
     Ok(())
 }

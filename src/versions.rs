@@ -39,6 +39,11 @@ pub struct ProtocolSpec {
     pub teleport_id_leads_position: bool,
     pub client_information_has_particle_status: bool,
     pub chat_message_has_checksum: bool,
+    pub play_clientbound_chunk_data: i32,
+    pub play_clientbound_unload_chunk: i32,
+    pub play_clientbound_block_change: i32,
+    pub play_clientbound_multi_block_change: i32,
+    pub world_supported: bool,
 }
 
 struct ConfigurationIds {
@@ -101,6 +106,14 @@ const fn describe(
     teleport_id_leads_position: bool,
     client_information_has_particle_status: bool,
 ) -> ProtocolSpec {
+    // Clientbound chunk/block packet IDs (world model). Only the protocols with
+    // the array-heightmap chunk format (>= 770) are mapped; others disable it.
+    let (chunk_data, unload_chunk, block_change, multi_block_change) = match protocol {
+        770 | 771 | 772 => (0x27, 0x21, 0x08, 0x4D),
+        773 | 774 => (0x2C, 0x25, 0x08, 0x52),
+        775 => (0x2D, 0x25, 0x08, 0x54),
+        _ => (-1, -1, -1, -1),
+    };
     ProtocolSpec {
         name,
         protocol,
@@ -127,6 +140,11 @@ const fn describe(
         teleport_id_leads_position,
         client_information_has_particle_status,
         chat_message_has_checksum: protocol >= 770,
+        play_clientbound_chunk_data: chunk_data,
+        play_clientbound_unload_chunk: unload_chunk,
+        play_clientbound_block_change: block_change,
+        play_clientbound_multi_block_change: multi_block_change,
+        world_supported: protocol >= 770,
     }
 }
 
