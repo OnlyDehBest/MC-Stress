@@ -1,6 +1,8 @@
 mod access;
 mod bot;
 mod browser;
+#[allow(dead_code)]
+mod entities;
 mod model;
 mod protocol;
 mod slp;

@@ -189,7 +189,7 @@ impl World {
         while section_reader.remaining() > 0 {
             let _block_count = section_reader.read_i16().map_err(|_| ())?;
             let section = parse_block_states(&mut section_reader)?;
-            skip_paletted(&mut section_reader, 3)?; // biomes
+            skip_paletted(&mut section_reader, 3, 64)?; // biomes (64 cells)
             sections.push(Some(section));
         }
 
@@ -198,12 +198,20 @@ impl World {
     }
 }
 
+// 1.21.5+ (protocol >= 770) chunk containers carry no data-array length prefix;
+// the number of longs is computed from bits-per-entry and the container size.
+fn long_count(bits: u8, capacity: usize) -> usize {
+    let per_long = 64 / bits as usize;
+    if per_long == 0 {
+        return 0;
+    }
+    (capacity + per_long - 1) / per_long
+}
+
 fn parse_block_states(reader: &mut PayloadReader) -> Result<Section, ()> {
     let bits = reader.read_u8().map_err(|_| ())?;
     if bits == 0 {
         let value = reader.read_varint().map_err(|_| ())? as u32;
-        let longs = reader.read_varint().map_err(|_| ())? as usize;
-        reader.skip(longs * 8).map_err(|_| ())?;
         return Ok(Section::Uniform(value));
     }
     let palette = if bits <= 8 {
@@ -216,7 +224,7 @@ fn parse_block_states(reader: &mut PayloadReader) -> Result<Section, ()> {
     } else {
         None
     };
-    let longs = reader.read_varint().map_err(|_| ())? as usize;
+    let longs = long_count(bits, 4096);
     let mut data = Vec::with_capacity(longs);
     for _ in 0..longs {
         data.push(reader.read_i64().map_err(|_| ())? as u64);
@@ -224,17 +232,19 @@ fn parse_block_states(reader: &mut PayloadReader) -> Result<Section, ()> {
     Ok(Section::Paletted { bits, palette, data })
 }
 
-fn skip_paletted(reader: &mut PayloadReader, max_indirect_bits: u8) -> Result<(), ()> {
+fn skip_paletted(reader: &mut PayloadReader, max_indirect_bits: u8, capacity: usize) -> Result<(), ()> {
     let bits = reader.read_u8().map_err(|_| ())?;
     if bits == 0 {
         reader.read_varint().map_err(|_| ())?;
-    } else if bits <= max_indirect_bits {
+        return Ok(());
+    }
+    if bits <= max_indirect_bits {
         let len = reader.read_varint().map_err(|_| ())? as usize;
         for _ in 0..len {
             reader.read_varint().map_err(|_| ())?;
         }
     }
-    let longs = reader.read_varint().map_err(|_| ())? as usize;
+    let longs = long_count(bits, capacity);
     reader.skip(longs * 8).map_err(|_| ())?;
     Ok(())
 }
@@ -323,6 +333,39 @@ mod tests {
         // Surface sits just above the top of the solid section (y = -64..-49).
         assert_eq!(world.surface_y(5, 100, 5), Some(-48));
         assert!(world.passable_column(5, -48, 5));
+    }
+
+    fn uniform_container(buf: &mut Vec<u8>, value: u32) {
+        buf.push(0); // bits per entry = 0 (single value)
+        crate::protocol::write_varint(buf, value as i32);
+        // no length prefix, no longs (1.21.5+ format)
+    }
+
+    #[test]
+    fn parse_real_chunk_no_size_prefix() {
+        // Build a chunk packet: section 0 solid stone (state 1), rest air.
+        let mut sections = Vec::new();
+        for i in 0..24 {
+            crate::protocol::write_u16(&mut sections, 0); // block count (i16)
+            uniform_container(&mut sections, if i == 0 { 1 } else { 0 }); // blocks
+            uniform_container(&mut sections, 0); // biomes
+        }
+        let mut body = Vec::new();
+        crate::protocol::write_i64(&mut body, 0); // x (i32) high word
+        // write_i64 wrote 8 bytes; we actually need two i32. Rebuild cleanly:
+        body.clear();
+        body.extend_from_slice(&0i32.to_be_bytes()); // x
+        body.extend_from_slice(&0i32.to_be_bytes()); // z
+        crate::protocol::write_varint(&mut body, 0); // heightmaps count
+        crate::protocol::write_varint(&mut body, sections.len() as i32); // chunkData length
+        body.extend_from_slice(&sections);
+
+        let mut world = World::new(774);
+        world.load_chunk(&body);
+        assert_eq!(world.loaded_chunks(), 1, "chunk should parse, not be dropped");
+        assert!(world.is_solid(3, -64, 5), "section 0 should be solid stone");
+        assert!(!world.is_solid(3, 40, 5), "upper sections are air");
+        assert_eq!(world.surface_y(3, 100, 5), Some(-48));
     }
 
     #[test]

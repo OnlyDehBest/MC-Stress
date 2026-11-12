@@ -343,8 +343,7 @@ async fn follow_model(
 
     if profile.disperse && config.spread_seconds > 0.0 {
         let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
-        let step_x = -heading.sin() * WALK_BLOCKS_PER_SECOND / 10.0;
-        let step_z = heading.cos() * WALK_BLOCKS_PER_SECOND / 10.0;
+        let mut disperse_heading = heading;
         let jitter = rand::thread_rng().gen_range(0.6..1.4);
         let seconds = config.spread_seconds.max(0.5) * jitter * profile.disperse_scale;
         let disperse_until = Instant::now() + Duration::from_secs_f64(seconds);
@@ -354,15 +353,25 @@ async fn follow_model(
             if Instant::now() >= disperse_until {
                 break;
             }
-            if advance(&position, &outgoing, spec, &world, step_x, step_z).await.is_err() {
-                return;
+            let step_x = -disperse_heading.sin() * WALK_BLOCKS_PER_SECOND / 10.0;
+            let step_z = disperse_heading.cos() * WALK_BLOCKS_PER_SECOND / 10.0;
+            match advance(&position, &outgoing, spec, &world, step_x, step_z).await {
+                Err(()) => return,
+                Ok(Step::Blocked) => {
+                    // Turn away from the obstacle instead of pushing into it.
+                    disperse_heading = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
+                }
+                Ok(Step::Moved) => {}
             }
         }
     }
 
     let continuous = match profile.continuous {
         Some(continuous) => continuous,
-        None => return,
+        None => {
+            settle(&position, &outgoing, spec, &world).await;
+            return;
+        }
     };
 
     let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
@@ -382,7 +391,29 @@ async fn follow_model(
         };
         let step_x = -travel_heading.sin() * continuous.blocks_per_tick * direction;
         let step_z = travel_heading.cos() * continuous.blocks_per_tick * direction;
-        if advance(&position, &outgoing, spec, &world, step_x, step_z).await.is_err() {
+        match advance(&position, &outgoing, spec, &world, step_x, step_z).await {
+            Err(()) => return,
+            Ok(Step::Blocked) => {
+                // Obstacle ahead: pick a new heading and route around it.
+                travel_heading = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
+            }
+            Ok(Step::Moved) => {}
+        }
+    }
+}
+
+/// Keep applying gravity in place so still models (idle, sentry, spread) rest on
+/// the real ground instead of hovering at their spawn height.
+async fn settle(
+    position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
+    outgoing: &mpsc::Sender<(i32, Vec<u8>)>,
+    spec: &'static ProtocolSpec,
+    world: &WorldHandle,
+) {
+    let mut tick = interval(Duration::from_millis(250));
+    loop {
+        tick.tick().await;
+        if advance(position, outgoing, spec, world, 0.0, 0.0).await.is_err() {
             return;
         }
     }
@@ -395,18 +426,21 @@ async fn advance(
     world: &WorldHandle,
     step_x: f64,
     step_z: f64,
-) -> Result<(), ()> {
+) -> Result<Step, ()> {
+    const FALL_PER_TICK: f64 = 4.0;
+
     let mut current = position.lock().await;
     let Some((x, y, z)) = current.as_mut() else {
-        return Ok(());
+        return Ok(Step::Moved);
     };
     let next_x = *x + step_x;
     let next_z = *z + step_z;
     let mut next_y = *y;
+    let mut blocked = false;
 
     // World-aware step: follow the real ground, step up a single block, fall into
-    // drops, and refuse to walk into a wall or a ceiling. Falls back to a flat
-    // slide when the destination chunk is not loaded yet.
+    // drops under gravity, and refuse to walk into a wall or a ceiling. Falls
+    // back to a flat slide while the destination chunk is not loaded yet.
     {
         let guard = world.lock().await;
         if let Some(w) = guard.as_ref() {
@@ -416,15 +450,35 @@ async fn advance(
             if w.is_loaded(bx, bz) {
                 match w.surface_y(bx, feet + 1, bz) {
                     Some(surface) if surface - feet <= 1 && w.passable_column(bx, surface, bz) => {
-                        next_y = surface as f64;
+                        let target = surface as f64;
+                        next_y = if target < *y {
+                            (*y - FALL_PER_TICK).max(target) // fall gradually
+                        } else {
+                            target // flat or single step up
+                        };
                     }
-                    _ => {
-                        // Blocked by a wall, a low ceiling, or a void: hold position.
-                        return Ok(());
-                    }
+                    _ => blocked = true, // wall, low ceiling or void
                 }
             }
         }
+    }
+
+    if blocked {
+        // Hold the horizontal position, but keep applying gravity in place so the
+        // bot still settles onto the ground instead of hovering at a wall.
+        let feet_here = y.floor() as i32;
+        let guard = world.lock().await;
+        if let Some(w) = guard.as_ref() {
+            if let Some(surface) = w.surface_y(x.floor() as i32, feet_here + 1, z.floor() as i32) {
+                let target = surface as f64;
+                if target < *y {
+                    *y = (*y - FALL_PER_TICK).max(target);
+                    let body = set_position_body(*x, *y, *z, spec.teleport_id_leads_position);
+                    let _ = outgoing.send((spec.play_serverbound_set_position, body)).await;
+                }
+            }
+        }
+        return Ok(Step::Blocked);
     }
 
     *x = next_x;
@@ -434,7 +488,12 @@ async fn advance(
     if outgoing.send((spec.play_serverbound_set_position, body)).await.is_err() {
         return Err(());
     }
-    Ok(())
+    Ok(Step::Moved)
+}
+
+enum Step {
+    Moved,
+    Blocked,
 }
 
 pub(crate) fn set_position_body(x: f64, y: f64, z: f64, modern_flags: bool) -> Vec<u8> {
