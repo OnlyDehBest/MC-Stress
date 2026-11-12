@@ -13,6 +13,7 @@ use crate::swarm::BotSwarm;
 use crate::protocol::{self, PayloadReader};
 use crate::versions::{self, ProtocolSpec};
 use crate::world::World;
+use crate::pathfind::{self, find_path};
 
 type WorldHandle = Arc<Mutex<Option<World>>>;
 
@@ -375,6 +376,24 @@ async fn follow_model(
     };
 
     let _moving = CountScope::enter(swarm.clone(), Tracked::Moving);
+    let has_world = world.lock().await.is_some();
+    if !continuous.oscillate_in_place && has_world {
+        // Roaming models navigate toward goals with A*, routing around obstacles.
+        roam(&position, &outgoing, spec, &world, &continuous).await;
+    } else {
+        // In-place models (and pre-1.21.5 servers with no world) drift by heading.
+        drift(&position, &outgoing, spec, &world, &continuous, heading).await;
+    }
+}
+
+async fn drift(
+    position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
+    outgoing: &mpsc::Sender<(i32, Vec<u8>)>,
+    spec: &'static ProtocolSpec,
+    world: &WorldHandle,
+    continuous: &crate::model::ContinuousMovement,
+    heading: f64,
+) {
     let mut travel_heading = heading;
     let mut swing = 1.0;
     let mut tick = interval(continuous.tick);
@@ -391,13 +410,127 @@ async fn follow_model(
         };
         let step_x = -travel_heading.sin() * continuous.blocks_per_tick * direction;
         let step_z = travel_heading.cos() * continuous.blocks_per_tick * direction;
-        match advance(&position, &outgoing, spec, &world, step_x, step_z).await {
+        match advance(position, outgoing, spec, world, step_x, step_z).await {
             Err(()) => return,
             Ok(Step::Blocked) => {
-                // Obstacle ahead: pick a new heading and route around it.
                 travel_heading = rand::thread_rng().gen_range(0.0..std::f64::consts::TAU);
             }
             Ok(Step::Moved) => {}
+        }
+    }
+}
+
+enum WalkResult {
+    Reached,
+    Blocked,
+    Disconnected,
+}
+
+/// Pick goals and walk A* paths to them, re-planning when a path is blocked or
+/// no goal/path is available. This is what makes bots route around obstacles.
+async fn roam(
+    position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
+    outgoing: &mpsc::Sender<(i32, Vec<u8>)>,
+    spec: &'static ProtocolSpec,
+    world: &WorldHandle,
+    continuous: &crate::model::ContinuousMovement,
+) {
+    let speed = continuous.blocks_per_tick.max(0.1);
+    let mut ticker = interval(continuous.tick);
+    loop {
+        let Some(start) = feet_block(position).await else {
+            ticker.tick().await;
+            continue;
+        };
+        let (goal, waypoints) = {
+            let guard = world.lock().await;
+            let Some(w) = guard.as_ref() else {
+                return;
+            };
+            match pick_goal(w, start) {
+                Some(goal) => (goal, find_path(w, start, goal, 1500)),
+                None => (start, None),
+            }
+        };
+        let _ = goal;
+        let waypoints = match waypoints {
+            Some(points) if !points.is_empty() => points,
+            _ => {
+                ticker.tick().await;
+                continue;
+            }
+        };
+        for waypoint in waypoints {
+            match walk_to(position, outgoing, spec, world, waypoint, speed, &mut ticker).await {
+                WalkResult::Reached => {}
+                WalkResult::Blocked => break, // re-plan from the new position
+                WalkResult::Disconnected => return,
+            }
+        }
+    }
+}
+
+async fn feet_block(position: &Arc<Mutex<Option<(f64, f64, f64)>>>) -> Option<pathfind::Pos> {
+    let guard = position.lock().await;
+    let (x, y, z) = (*guard)?;
+    Some((x.floor() as i32, y.floor() as i32, z.floor() as i32))
+}
+
+fn pick_goal(world: &World, start: pathfind::Pos) -> Option<pathfind::Pos> {
+    let mut rng = rand::thread_rng();
+    for _ in 0..10 {
+        let angle: f64 = rng.gen_range(0.0..std::f64::consts::TAU);
+        let distance: f64 = rng.gen_range(10.0..28.0);
+        let gx = start.0 + (angle.cos() * distance).round() as i32;
+        let gz = start.2 + (angle.sin() * distance).round() as i32;
+        if !world.is_loaded(gx, gz) {
+            continue;
+        }
+        if let Some(surface) = world.surface_y(gx, start.1 + 4, gz) {
+            return Some((gx, surface, gz));
+        }
+    }
+    None
+}
+
+async fn walk_to(
+    position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
+    outgoing: &mpsc::Sender<(i32, Vec<u8>)>,
+    spec: &'static ProtocolSpec,
+    world: &WorldHandle,
+    target: pathfind::Pos,
+    speed: f64,
+    ticker: &mut tokio::time::Interval,
+) -> WalkResult {
+    let tx = target.0 as f64 + 0.5;
+    let tz = target.2 as f64 + 0.5;
+    let mut guard_ticks = 0u32;
+    loop {
+        ticker.tick().await;
+        let (cx, cz) = {
+            let guard = position.lock().await;
+            match *guard {
+                Some((x, _, z)) => (x, z),
+                None => return WalkResult::Disconnected,
+            }
+        };
+        let dx = tx - cx;
+        let dz = tz - cz;
+        let distance = (dx * dx + dz * dz).sqrt();
+        if distance < 0.45 {
+            return WalkResult::Reached;
+        }
+        let step = speed.min(distance);
+        let step_x = dx / distance * step;
+        let step_z = dz / distance * step;
+        match advance(position, outgoing, spec, world, step_x, step_z).await {
+            Err(()) => return WalkResult::Disconnected,
+            Ok(Step::Blocked) => return WalkResult::Blocked,
+            Ok(Step::Moved) => {}
+        }
+        guard_ticks += 1;
+        if guard_ticks > 200 {
+            return WalkResult::Blocked; // safety: re-plan if we can't make progress
         }
     }
 }

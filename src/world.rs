@@ -123,6 +123,12 @@ impl World {
         !self.is_solid(x, y, z) && !self.is_solid(x, y + 1, z)
     }
 
+    /// Can a player stand with feet at (x, y, z): solid floor below, two blocks
+    /// of clear space for the body.
+    pub fn standable(&self, x: i32, y: i32, z: i32) -> bool {
+        self.is_solid(x, y - 1, z) && !self.is_solid(x, y, z) && !self.is_solid(x, y + 1, z)
+    }
+
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, state: u32) {
         let Some(column) = self.chunks.get_mut(&(x >> 4, z >> 4)) else {
             return;
@@ -159,6 +165,26 @@ impl World {
 
     pub fn unload(&mut self, x: i32, z: i32) {
         self.chunks.remove(&(x, z));
+    }
+
+    #[cfg(test)]
+    pub fn ensure_floor(&mut self, x: i32, y: i32, z: i32) {
+        self.test_solid(x, y, z);
+    }
+
+    #[cfg(test)]
+    pub fn ensure_wall(&mut self, x: i32, y: i32, z: i32) {
+        self.test_solid(x, y, z);
+    }
+
+    #[cfg(test)]
+    fn test_solid(&mut self, x: i32, y: i32, z: i32) {
+        self.chunks
+            .entry((x >> 4, z >> 4))
+            .or_insert_with(|| Column {
+                sections: (0..24).map(|_| None).collect(),
+            });
+        self.set_block(x, y, z, 1);
     }
 
     /// Parse a clientbound Chunk Data payload (protocol >= 770 format).

@@ -3,6 +3,7 @@ mod bot;
 mod browser;
 #[allow(dead_code)]
 mod entities;
+mod pathfind;
 mod model;
 mod protocol;
 mod slp;
