@@ -196,6 +196,36 @@ pub fn spec_for(protocol: i32) -> Option<&'static ProtocolSpec> {
     SPECS.iter().find(|spec| spec.protocol == protocol)
 }
 
+/// Newest spec we know about (highest protocol).
+pub fn newest() -> &'static ProtocolSpec {
+    SPECS.iter().max_by_key(|spec| spec.protocol).unwrap()
+}
+
+/// Best spec for an unknown protocol number: the exact match, else the highest
+/// known protocol not above it, else the newest. Modern servers are the norm,
+/// so an unrecognised (usually newer) protocol lands on the newest spec rather
+/// than the oldest.
+pub fn closest_spec(protocol: i32) -> &'static ProtocolSpec {
+    if let Some(spec) = spec_for(protocol) {
+        return spec;
+    }
+    SPECS
+        .iter()
+        .filter(|spec| spec.protocol <= protocol)
+        .max_by_key(|spec| spec.protocol)
+        .unwrap_or_else(|| newest())
+}
+
+/// Match a server's reported version name (e.g. "Paper 1.21.11") against our
+/// known version names, preferring the longest name that appears in it so
+/// "1.21.11" wins over the "1.21.1" substring.
+pub fn spec_for_name(name: &str) -> Option<&'static ProtocolSpec> {
+    SPECS
+        .iter()
+        .filter(|spec| name.contains(spec.name))
+        .max_by_key(|spec| spec.name.len())
+}
+
 pub fn supported() -> Vec<(i32, &'static str)> {
     SPECS.iter().map(|spec| (spec.protocol, spec.name)).collect()
 }

@@ -231,27 +231,37 @@ impl BotSwarm {
                 .ok_or_else(|| format!("Protocol {protocol} is not supported. Supported: {}", supported_list()));
         }
         match slp::ping(&request.host, request.port, versions::DEFAULT_PROTOCOL).await {
-            Ok(status) => match status.protocol.and_then(versions::spec_for) {
-                Some(spec) => {
+            Ok(status) => {
+                // Exact protocol match wins; otherwise guess from the protocol
+                // number (closest known, biased newer) or the version name.
+                if let Some(spec) = status.protocol.and_then(versions::spec_for) {
                     self.log(format!(
                         "Detected version: {} (protocol {}).",
                         status.version_name.as_deref().unwrap_or("?"),
                         spec.protocol
                     ));
-                    Ok(spec)
+                    return Ok(spec);
                 }
-                None => {
-                    let spec = versions::spec_for(versions::DEFAULT_PROTOCOL).unwrap();
-                    self.log(format!(
-                        "Unrecognised version ({:?} / proto {:?}): falling back to {}. Force the protocol or update src/versions.rs.",
-                        status.version_name, status.protocol, spec.name
-                    ));
-                    Ok(spec)
-                }
-            },
+                let spec = status
+                    .protocol
+                    .map(versions::closest_spec)
+                    .or_else(|| status.version_name.as_deref().and_then(versions::spec_for_name))
+                    .unwrap_or_else(versions::newest);
+                self.log(format!(
+                    "Version {:?} (proto {:?}) not in table: using closest, {} (protocol {}). Force the protocol if bots get rejected.",
+                    status.version_name.as_deref().unwrap_or("?"),
+                    status.protocol,
+                    spec.name,
+                    spec.protocol
+                ));
+                Ok(spec)
+            }
             Err(reason) => {
-                let spec = versions::spec_for(versions::DEFAULT_PROTOCOL).unwrap();
-                self.log(format!("Server List Ping failed ({reason}): falling back to {}.", spec.name));
+                let spec = versions::newest();
+                self.log(format!(
+                    "Server List Ping failed ({reason}): using newest known, {} (protocol {}). Force the protocol if wrong.",
+                    spec.name, spec.protocol
+                ));
                 Ok(spec)
             }
         }
