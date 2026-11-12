@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rand::Rng;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinSet;
 use tokio::time::{interval, Instant};
 
 use crate::model::{BotModel, WALK_BLOCKS_PER_SECOND};
@@ -129,8 +130,10 @@ async fn join_and_hold(
 
     let _connected = CountScope::enter(swarm.clone(), Tracked::Connected);
 
+    // JoinSet aborts these on drop, so an aborted bot closes its socket at once instead of lingering.
+    let mut tasks = JoinSet::new();
     let (outgoing, mut outgoing_rx) = mpsc::channel::<(i32, Vec<u8>)>(64);
-    let writer_task = tokio::spawn(async move {
+    tasks.spawn(async move {
         while let Some((packet_id, body)) = outgoing_rx.recv().await {
             if protocol::write_packet(&mut writer, compression_threshold, packet_id, &body).await.is_err() {
                 break;
@@ -139,24 +142,14 @@ async fn join_and_hold(
     });
 
     let position: Arc<Mutex<Option<(f64, f64, f64)>>> = Arc::new(Mutex::new(None));
-    let movement_task = tokio::spawn(follow_model(config.clone(), swarm.clone(), outgoing.clone(), position.clone()));
+    tasks.spawn(follow_model(config.clone(), swarm.clone(), outgoing.clone(), position.clone()));
 
     let has_activity = config.chat_message.is_some() || config.command.is_some() || config.swing;
-    let activity_task = if has_activity {
-        Some(tokio::spawn(run_activity(config.clone(), outgoing.clone())))
-    } else {
-        None
-    };
-
-    let outcome = hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position).await;
-
-    movement_task.abort();
-    if let Some(activity) = activity_task {
-        activity.abort();
+    if has_activity {
+        tasks.spawn(run_activity(config.clone(), outgoing.clone()));
     }
-    drop(outgoing);
-    writer_task.abort();
-    outcome
+
+    hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position).await
 }
 
 async fn run_activity(config: BotConfig, outgoing: mpsc::Sender<(i32, Vec<u8>)>) {
