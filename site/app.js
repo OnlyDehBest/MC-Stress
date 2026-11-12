@@ -62,9 +62,13 @@
   var bpBots = null, bpTime = null;
   var prevCycle = 0, lastSample = -1;
 
-  function botsAt(cycle) {
-    var up = CYCLE * 0.72;
-    return cycle < up ? MAX_BOTS * (cycle / up) : MAX_BOTS;
+  // Smooth periodic ramp: rise to the breaking point, ease back down, repeat —
+  // so the chart is always full and always moving, never empties and refills.
+  function botsAt(now) {
+    var phase = (now % CYCLE) / CYCLE; // 0..1
+    return phase < 0.72
+      ? MAX_BOTS * (phase / 0.72)
+      : MAX_BOTS * (1 - (phase - 0.72) / 0.28);
   }
 
   function latencyAt(b, dt) {
@@ -91,14 +95,12 @@
   }
 
   function advance(now, dt) {
-    var cycle = now % CYCLE;
-    if (cycle < prevCycle) { samples = []; bpBots = null; bpTime = null; latNoise = 0; }
-    prevCycle = cycle;
-    var b = botsAt(cycle);
+    var b = botsAt(now);
     var l = latencyAt(b, dt);
     if (now - lastSample >= 0.05) { samples.push({ t: now, b: b, l: l }); lastSample = now; }
     while (samples.length > 2 && samples[0].t < now - WINDOW - 0.5) samples.shift();
-    if (bpBots === null && l > 150) { bpBots = Math.round(b); bpTime = now; }
+    if (b < 15) { bpBots = null; bpTime = null; }       // re-arm at the bottom of the cycle
+    else if (bpTime === null && l > 150) { bpBots = Math.round(b); bpTime = now; }
     var ease = Math.min(1, dt * 6);
     dispBots += (b - dispBots) * ease;
     dispLat += (l - dispLat) * ease;
@@ -134,26 +136,30 @@
     }
   }
 
-  if (reduce) {
-    // Static representative frame, no animation.
-    for (var k = 0; k <= WINDOW; k += 0.1) {
-      var b = botsAt(k), base = 18 + b * 0.12;
+  // Pre-fill a full window so the chart is already populated and risen on load,
+  // instead of growing in from the right edge.
+  function seed() {
+    for (var ts = 0; ts <= WINDOW; ts += 0.05) {
+      var b = botsAt(ts), base = 18 + b * 0.12;
       if (b > 170) base += Math.pow(b - 170, 1.6) * 0.9;
-      samples.push({ t: k, b: b, l: Math.min(MAX_LAT, base) });
-      if (bpBots === null && base > 150) { bpBots = Math.round(b); bpTime = k; }
+      samples.push({ t: ts, b: b, l: Math.min(MAX_LAT, base) });
+      if (b < 15) { bpBots = null; bpTime = null; }
+      else if (bpTime === null && base > 150) { bpBots = Math.round(b); bpTime = ts; }
     }
+    lastSample = WINDOW;
     dispBots = samples[samples.length - 1].b;
     dispLat = samples[samples.length - 1].l;
-    paint(WINDOW);
-    return;
   }
 
-  var start = performance.now() / 1000;
-  var last = start;
+  seed();
+  if (reduce) { paint(WINDOW); return; }
+
+  var start = performance.now() / 1000 - WINDOW; // begin already a full window in
+  var prevNow = WINDOW;
   function tick(ms) {
     var now = ms / 1000 - start;
-    var dt = Math.min(0.1, now - (last - start));
-    last = ms / 1000;
+    var dt = Math.min(0.1, Math.max(0, now - prevNow));
+    prevNow = now;
     advance(now, dt);
     requestAnimationFrame(tick);
   }
