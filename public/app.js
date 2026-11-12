@@ -136,6 +136,9 @@ function readConfig() {
   const command = $('command').value.trim();
   if (command) config.command = command;
   if ($('swing').value === 'on') config.swing = true;
+  if ($('mine').value === 'on') config.mine = true;
+  if ($('attack').value === 'on') config.attack = true;
+  if ($('interact').value === 'on') config.interact = true;
   return config;
 }
 

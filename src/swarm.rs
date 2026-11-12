@@ -38,6 +38,12 @@ pub struct StartRequest {
     pub command: Option<String>,
     #[serde(default)]
     pub swing: bool,
+    #[serde(default)]
+    pub mine: bool,
+    #[serde(default)]
+    pub attack: bool,
+    #[serde(default)]
+    pub interact: bool,
     #[serde(default = "default_action_interval")]
     pub action_interval_ms: u64,
 }
@@ -156,6 +162,9 @@ impl BotSwarm {
             chat_message: chat_message.clone(),
             command: command.clone(),
             swing: request.swing,
+            mine: request.mine,
+            attack: request.attack,
+            interact: request.interact,
             action_interval: Duration::from_millis(request.action_interval_ms.max(500)),
         };
 

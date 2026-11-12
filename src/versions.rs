@@ -46,6 +46,7 @@ pub struct ProtocolSpec {
     pub play_clientbound_multi_block_change: i32,
     pub world_supported: bool,
     pub play_serverbound_use_entity: i32,
+    pub play_serverbound_use_item: i32,
     pub play_clientbound_spawn_entity: i32,
     pub play_clientbound_entity_move: i32,
     pub play_clientbound_entity_move_look: i32,
@@ -121,13 +122,13 @@ const fn describe(
         775 => (0x2D, 0x25, 0x08, 0x54),
         _ => (-1, -1, -1, -1),
     };
-    // Serverbound use_entity + clientbound entity spawn/move/teleport/destroy.
-    let (use_entity, spawn_entity, entity_move, entity_move_look, entity_teleport, entity_destroy) = match protocol {
-        770 => (0x18, 0x01, 0x2E, 0x2F, 0x76, 0x46),
-        771 | 772 => (0x19, 0x01, 0x2E, 0x2F, 0x76, 0x46),
-        773 | 774 => (0x19, 0x01, 0x33, 0x34, 0x7B, 0x4B),
-        775 => (0x1A, 0x01, 0x35, 0x36, 0x7D, 0x4D),
-        _ => (-1, -1, -1, -1, -1, -1),
+    // Serverbound use_entity/use_item + clientbound entity spawn/move/teleport/destroy.
+    let (use_entity, use_item, spawn_entity, entity_move, entity_move_look, entity_teleport, entity_destroy) = match protocol {
+        770 => (0x18, 0x3F, 0x01, 0x2E, 0x2F, 0x76, 0x46),
+        771 | 772 => (0x19, 0x40, 0x01, 0x2E, 0x2F, 0x76, 0x46),
+        773 | 774 => (0x19, 0x40, 0x01, 0x33, 0x34, 0x7B, 0x4B),
+        775 => (0x1A, 0x43, 0x01, 0x35, 0x36, 0x7D, 0x4D),
+        _ => (-1, -1, -1, -1, -1, -1, -1),
     };
     ProtocolSpec {
         name,
@@ -161,6 +162,7 @@ const fn describe(
         play_clientbound_multi_block_change: multi_block_change,
         world_supported: protocol >= 770,
         play_serverbound_use_entity: use_entity,
+        play_serverbound_use_item: use_item,
         play_clientbound_spawn_entity: spawn_entity,
         play_clientbound_entity_move: entity_move,
         play_clientbound_entity_move_look: entity_move_look,

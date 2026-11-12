@@ -14,8 +14,10 @@ use crate::protocol::{self, PayloadReader};
 use crate::versions::{self, ProtocolSpec};
 use crate::world::World;
 use crate::pathfind::{self, find_path};
+use crate::entities::EntityStore;
 
 type WorldHandle = Arc<Mutex<Option<World>>>;
+type EntityHandle = Arc<Mutex<Option<EntityStore>>>;
 
 #[derive(Clone)]
 pub struct BotConfig {
@@ -28,6 +30,9 @@ pub struct BotConfig {
     pub chat_message: Option<String>,
     pub command: Option<String>,
     pub swing: bool,
+    pub mine: bool,
+    pub attack: bool,
+    pub interact: bool,
     pub action_interval: Duration,
 }
 
@@ -151,6 +156,11 @@ async fn join_and_hold(
     } else {
         None
     }));
+    let entities: EntityHandle = Arc::new(Mutex::new(if spec.world_supported {
+        Some(EntityStore::new())
+    } else {
+        None
+    }));
     tasks.spawn(follow_model(
         config.clone(),
         swarm.clone(),
@@ -159,27 +169,43 @@ async fn join_and_hold(
         world.clone(),
     ));
 
-    let has_activity = config.chat_message.is_some() || config.command.is_some() || config.swing;
+    let has_activity = config.chat_message.is_some()
+        || config.command.is_some()
+        || config.swing
+        || config.mine
+        || config.attack
+        || config.interact;
     if has_activity {
-        tasks.spawn(run_activity(config.clone(), outgoing.clone()));
+        tasks.spawn(run_activity(
+            config.clone(),
+            outgoing.clone(),
+            position.clone(),
+            world.clone(),
+            entities.clone(),
+        ));
     }
 
-    hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position, &world).await
+    hold_in_play(&mut reader, compression_threshold, spec, &outgoing, &position, &world, &entities).await
 }
 
-async fn run_activity(config: BotConfig, outgoing: mpsc::Sender<(i32, Vec<u8>)>) {
+async fn run_activity(
+    config: BotConfig,
+    outgoing: mpsc::Sender<(i32, Vec<u8>)>,
+    position: Arc<Mutex<Option<(f64, f64, f64)>>>,
+    world: WorldHandle,
+    entities: EntityHandle,
+) {
     let spec = config.spec;
     tokio::time::sleep(Duration::from_secs(2)).await;
     let mut tick = interval(config.action_interval.max(Duration::from_millis(500)));
+    let mut sequence: i32 = 0;
     loop {
         tick.tick().await;
-        if config.swing {
-            let mut body = Vec::new();
-            protocol::write_varint(&mut body, 0);
-            if outgoing.send((spec.play_serverbound_swing_arm, body)).await.is_err() {
-                return;
-            }
+
+        if config.swing && send_swing(spec, &outgoing).await.is_err() {
+            return;
         }
+
         if let Some(command) = &config.command {
             let mut body = Vec::new();
             protocol::write_string(&mut body, command);
@@ -187,12 +213,115 @@ async fn run_activity(config: BotConfig, outgoing: mpsc::Sender<(i32, Vec<u8>)>)
                 return;
             }
         }
+
         if let Some(message) = &config.chat_message {
-            if outgoing.send((spec.play_serverbound_chat_message, chat_message_body(message, spec.chat_message_has_checksum))).await.is_err() {
+            let body = chat_message_body(message, spec.chat_message_has_checksum);
+            if outgoing.send((spec.play_serverbound_chat_message, body)).await.is_err() {
+                return;
+            }
+        }
+
+        if config.attack && spec.play_serverbound_use_entity >= 0 {
+            if let Some(target) = nearest_entity(&position, &entities).await {
+                let mut body = Vec::new();
+                protocol::write_varint(&mut body, target); // target entity id
+                protocol::write_varint(&mut body, 1); // interaction type 1 = attack
+                protocol::write_bool(&mut body, false); // sneaking
+                if outgoing.send((spec.play_serverbound_use_entity, body)).await.is_err() {
+                    return;
+                }
+                if send_swing(spec, &outgoing).await.is_err() {
+                    return;
+                }
+            }
+        }
+
+        if config.mine {
+            if let Some((bx, by, bz, face)) = mine_target(&position, &world).await {
+                sequence += 1;
+                let start = dig_body(0, bx, by, bz, face, sequence); // start digging
+                if outgoing.send((spec.play_serverbound_player_action, start)).await.is_err() {
+                    return;
+                }
+                if send_swing(spec, &outgoing).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(350)).await;
+                sequence += 1;
+                let finish = dig_body(2, bx, by, bz, face, sequence); // finish digging
+                if outgoing.send((spec.play_serverbound_player_action, finish)).await.is_err() {
+                    return;
+                }
+                if let Some(w) = world.lock().await.as_mut() {
+                    w.set_block(bx, by, bz, 0); // reflect the break locally
+                }
+            }
+        }
+
+        if config.interact {
+            sequence += 1;
+            let mut body = Vec::new();
+            protocol::write_varint(&mut body, 0); // hand = main
+            protocol::write_varint(&mut body, sequence);
+            protocol::write_f32(&mut body, 0.0); // yaw
+            protocol::write_f32(&mut body, 0.0); // pitch
+            if outgoing.send((spec.play_serverbound_use_item, body)).await.is_err() {
                 return;
             }
         }
     }
+}
+
+async fn send_swing(spec: &'static ProtocolSpec, outgoing: &mpsc::Sender<(i32, Vec<u8>)>) -> Result<(), ()> {
+    let mut body = Vec::new();
+    protocol::write_varint(&mut body, 0); // hand = main
+    outgoing.send((spec.play_serverbound_swing_arm, body)).await.map_err(|_| ())
+}
+
+async fn nearest_entity(
+    position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
+    entities: &EntityHandle,
+) -> Option<i32> {
+    let (x, y, z) = (*position.lock().await)?;
+    let guard = entities.lock().await;
+    guard.as_ref()?.nearest(x, y, z, 4.5).map(|(id, _)| id)
+}
+
+/// First solid block worth mining near the bot: a horizontal neighbour at feet
+/// level, otherwise the block underneath. Returns (x, y, z, face).
+async fn mine_target(
+    position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
+    world: &WorldHandle,
+) -> Option<(i32, i32, i32, i8)> {
+    let (x, y, z) = (*position.lock().await)?;
+    let fx = x.floor() as i32;
+    let fy = y.floor() as i32;
+    let fz = z.floor() as i32;
+    let guard = world.lock().await;
+    let w = guard.as_ref()?;
+    // Faces: +X=5, -X=4, +Z=3, -Z=2, down=0.
+    for (dx, dz, face) in [(1, 0, 5i8), (-1, 0, 4), (0, 1, 3), (0, -1, 2)] {
+        if w.is_solid(fx + dx, fy, fz + dz) {
+            return Some((fx + dx, fy, fz + dz, face));
+        }
+    }
+    if w.is_solid(fx, fy - 1, fz) {
+        return Some((fx, fy - 1, fz, 0));
+    }
+    None
+}
+
+fn encode_block_pos(x: i32, y: i32, z: i32) -> i64 {
+    ((x as i64 & 0x3FF_FFFF) << 38) | ((z as i64 & 0x3FF_FFFF) << 12) | (y as i64 & 0xFFF)
+}
+
+fn dig_body(status: i32, x: i32, y: i32, z: i32, face: i8, sequence: i32) -> Vec<u8> {
+    let mut body = Vec::new();
+    protocol::write_varint(&mut body, status); // 0 start, 1 cancel, 2 finish
+    protocol::write_i64(&mut body, encode_block_pos(x, y, z));
+    body.push(face as u8);
+    protocol::write_varint(&mut body, sequence);
+    body
 }
 
 fn chat_message_body(message: &str, has_checksum: bool) -> Vec<u8> {
@@ -217,10 +346,14 @@ async fn hold_in_play(
     outgoing: &mpsc::Sender<(i32, Vec<u8>)>,
     position: &Arc<Mutex<Option<(f64, f64, f64)>>>,
     world: &WorldHandle,
+    entities: &EntityHandle,
 ) -> std::io::Result<()> {
     loop {
         let (packet_id, body) = protocol::read_packet(reader, compression_threshold).await?;
         if spec.world_supported && apply_world_packet(spec, packet_id, &body, world).await {
+            continue;
+        }
+        if spec.world_supported && apply_entity_packet(spec, packet_id, &body, entities).await {
             continue;
         }
         if packet_id == spec.play_clientbound_keep_alive {
@@ -322,6 +455,42 @@ fn decode_position(value: i64) -> (i32, i32, i32) {
     let y = ((value << 52) >> 52) as i32;
     let z = ((value << 26) >> 38) as i32;
     (x, y, z)
+}
+
+async fn apply_entity_packet(
+    spec: &'static ProtocolSpec,
+    packet_id: i32,
+    body: &[u8],
+    entities: &EntityHandle,
+) -> bool {
+    enum Kind {
+        Spawn,
+        Move,
+        Teleport,
+        Destroy,
+    }
+    let kind = if packet_id == spec.play_clientbound_spawn_entity {
+        Kind::Spawn
+    } else if packet_id == spec.play_clientbound_entity_move
+        || packet_id == spec.play_clientbound_entity_move_look
+    {
+        Kind::Move
+    } else if packet_id == spec.play_clientbound_entity_teleport {
+        Kind::Teleport
+    } else if packet_id == spec.play_clientbound_entity_destroy {
+        Kind::Destroy
+    } else {
+        return false;
+    };
+    if let Some(store) = entities.lock().await.as_mut() {
+        match kind {
+            Kind::Spawn => store.spawn(body),
+            Kind::Move => store.relative_move(body),
+            Kind::Teleport => store.teleport(body),
+            Kind::Destroy => store.destroy(body),
+        }
+    }
+    true
 }
 
 async fn follow_model(
